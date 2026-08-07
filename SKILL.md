@@ -12,6 +12,26 @@ description: "Ideate, generate, process, optimize, implement, and explain high-p
 默认视频模型固定为 ZenMux 的 `minimax/minimax-h3`。只有用户明确要求更换，或
 MiniMax 无法完成目标时，才讨论其他模型；不要让用户在没有必要时承担模型选择。
 
+## 首次配置 API Key
+
+生成视频前先运行：
+
+```bash
+python3 "$OIL_MOTION/scripts/oil_motion_config.py" status
+```
+
+已经配置时直接继续，不要再次询问。尚未配置时，告诉用户只需配置一次，并引导用户在
+终端运行：
+
+```bash
+python3 "$OIL_MOTION/scripts/oil_motion_config.py" set
+```
+
+脚本会隐藏输入内容，并把密钥保存在本机的
+`~/.config/oil-motion/config.json`。配置文件不在项目目录内，权限限制为当前用户读写。
+不要让用户把密钥写进项目、提示词、命令参数、日志或任务元数据。`ZENMUX_API_KEY`
+环境变量仍然可用，并且优先于配置文件。
+
 ## 核心原则
 
 1. 先定义交互参数和关键状态，再生图、再生视频。没有参数模型和首尾关键帧，就不提交视频。
@@ -218,11 +238,8 @@ Skill 自带 `scripts/video_job.py`，用于提交、轮询和下载 ZenMux / Mi
   再按目标尾帧清理，不能假设请求值就是成片值。
 - 模型拒绝某个参数时必须明确报告，再选择降级方案；不要静默删掉首尾帧。
 
-密钥只从环境变量读取：
-
-```bash
-export ZENMUX_API_KEY="..."
-```
+`video_job.py` 会优先读取 `ZENMUX_API_KEY`，没有环境变量时自动读取已经保存的本地
+配置。提交前按“首次配置 API Key”检查一次即可。
 
 闭环示例：
 

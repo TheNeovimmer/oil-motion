@@ -17,6 +17,9 @@ https://github.com/user-attachments/assets/08e26ad6-ca23-4f31-ac53-44c7692ba99d
 
 告诉 Agent：帮我安装「https://github.com/oil-oil/oil-motion」这个 Skill。
 
+第一次生成视频时，Agent 会引导你输入一次 ZenMux API Key。密钥只保存在本机，
+后续使用会自动读取，不需要重复配置。
+
 ## 它解决什么
 
 - **结果不可控**：先验收首尾关键帧，不让视频模型临时发明终点。
@@ -91,12 +94,11 @@ MiniMax H3 的参考图模式和首尾帧模式互斥。`video_job.py` 会在联
 
 ## MiniMax 动作母版
 
-密钥只从环境变量读取：
-
 ```bash
-export ZENMUX_API_KEY="..."
 export OIL_MOTION="/absolute/path/to/oil-motion"
 ```
+
+如果还没有配置 ZenMux API Key，Agent 会先引导你完成一次本地配置。
 
 单向转场：
 
@@ -177,6 +179,7 @@ python3 "$OIL_MOTION/scripts/motion_pipeline.py" contact frames/raw \
 | 脚本 | 作用 |
 | --- | --- |
 | `video_job.py` | 提交、轮询并下载 MiniMax H3 动作母版 |
+| `oil_motion_config.py` | 保存、检查或清除本机的 ZenMux API Key |
 | `motion_budget.py` | 计算单帧清晰度、采样密度和纹理预算 |
 | `motion_pipeline.py` | 探测、切帧、抠色、稳定、分析、接触表和图集 |
 | `loop_cleanup.py` | 选择接缝、裁尾部停顿并删除近重复帧 |

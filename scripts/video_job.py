@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """提交、轮询并下载 MiniMax H3 视频任务。
 
-密钥只从 ZENMUX_API_KEY 环境变量读取，不写入命令、日志或元数据。
+密钥优先从 ZENMUX_API_KEY 读取，否则读取 Oil Motion 的本地配置。
 MiniMax H3 有两种互斥的图片约束模式：
 
 - 闭环：同一张图同时作为 first_frame 与 last_frame。
@@ -15,7 +15,6 @@ import argparse
 import base64
 import json
 import mimetypes
-import os
 import sys
 import time
 import urllib.error
@@ -24,6 +23,8 @@ from pathlib import Path
 from typing import Any
 
 from PIL import Image
+
+from oil_motion_config import require_api_key
 
 
 API_ROOT = "https://zenmux.ai/api/v1"
@@ -244,9 +245,7 @@ def build_payload(args: argparse.Namespace) -> dict[str, Any]:
 def generate(args: argparse.Namespace) -> int:
     # 先做纯本地参数校验，避免因为缺少密钥而掩盖组合错误。
     payload = build_payload(args)
-    api_key = os.environ.get("ZENMUX_API_KEY", "").strip()
-    if not api_key:
-        raise RuntimeError("请先设置 ZENMUX_API_KEY；工具不会从参数读取或保存密钥")
+    api_key = require_api_key()
 
     output = Path(args.output).expanduser().resolve()
     metadata = (

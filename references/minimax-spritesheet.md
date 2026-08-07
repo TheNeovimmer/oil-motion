@@ -64,12 +64,17 @@ motion-name/
 
 ## 标准执行流程
 
-先设置 Skill 路径和密钥。密钥只放环境变量，不写入文件、命令历史示例或任务元数据：
+先设置 Skill 路径，再检查 API Key 是否已经配置：
 
 ```bash
-OIL_MOTION="$HOME/.codex/skills/oil-motion"
-export ZENMUX_API_KEY="..."
+OIL_MOTION="/absolute/path/to/oil-motion"
+python3 "$OIL_MOTION/scripts/oil_motion_config.py" status
 ```
+
+如果尚未配置，引导用户运行一次
+`python3 "$OIL_MOTION/scripts/oil_motion_config.py" set`。脚本会隐藏输入内容，并把
+密钥保存在本机配置文件中。后续任务直接复用，不要重复询问，也不要把密钥写进项目、
+提示词、命令参数、日志或任务元数据。
 
 ### 1. 预算门槛
 
