@@ -2,7 +2,7 @@
   <img src="./assets/readme/hero.svg" width="100%" alt="Oil Motion 把首尾关键帧和 MiniMax 视频编译成由滚动、指针或拖拽控制的网页交互动画">
 </p>
 
-Oil Motion 是一个面向 Codex 的交互动画 Skill。它先用关键帧锁定正确结果，再让
+Oil Motion 是一个 Agent 通用的交互动画 Skill，也可以脱离 Agent 直接运行脚本。它先用关键帧锁定正确结果，再让
 MiniMax H3 生成连续动作母版，最后通过确定性脚本完成切帧、质检、压缩、打包和网页
 输入映射。
 
@@ -16,15 +16,14 @@ https://github.com/user-attachments/assets/08e26ad6-ca23-4f31-ac53-44c7692ba99d
 ## 安装
 
 ```bash
-git clone https://github.com/oil-oil/oil-motion.git \
-  "${CODEX_HOME:-$HOME/.codex}/skills/oil-motion"
-
-python3 -m pip install -r \
-  "${CODEX_HOME:-$HOME/.codex}/skills/oil-motion/scripts/requirements.txt"
+git clone https://github.com/oil-oil/oil-motion.git
+cd oil-motion
+python3 -m pip install -r scripts/requirements.txt
 ```
 
 同时需要本机安装 `ffmpeg` 和 `ffprobe`。生成 MiniMax 动作母版时，再设置
-`ZENMUX_API_KEY`；只处理已有视频或序列帧时不需要密钥。
+`ZENMUX_API_KEY`；只处理已有视频或序列帧时不需要密钥。需要作为 Skill 使用时，
+将仓库目录放进所用 Agent 的 Skills 目录即可。
 
 ## 它解决什么
 
@@ -58,7 +57,7 @@ Oil Motion 会先区分两类变化：
 
 ## 快速开始
 
-在 Codex 中直接说明目标、素材和交互方式：
+在支持 Skills 的 Agent 中直接说明目标、素材和交互方式：
 
 ```text
 使用 $oil-motion，把这两张已经验收的首尾图做成由滚动控制的产品爆炸动画。
@@ -105,7 +104,7 @@ MiniMax H3 的参考图模式和首尾帧模式互斥。`video_job.py` 会在联
 
 ```bash
 export ZENMUX_API_KEY="..."
-OIL_MOTION="$HOME/.codex/skills/oil-motion"
+export OIL_MOTION="/absolute/path/to/oil-motion"
 ```
 
 单向转场：
