@@ -10,7 +10,8 @@ MiniMax H3 生成连续动作母版，最后通过确定性脚本完成切帧、
 
 ## 演示
 
-https://github.com/oil-oil/oil-motion/blob/main/assets/demo/oil-motion-demo.mp4
+https://github.com/user-attachments/assets/08e26ad6-ca23-4f31-ac53-44c7692ba99d
+
 
 ## 安装
 
