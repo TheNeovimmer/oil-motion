@@ -15,15 +15,7 @@ https://github.com/user-attachments/assets/08e26ad6-ca23-4f31-ac53-44c7692ba99d
 
 ## 安装
 
-```bash
-git clone https://github.com/oil-oil/oil-motion.git
-cd oil-motion
-python3 -m pip install -r scripts/requirements.txt
-```
-
-同时需要本机安装 `ffmpeg` 和 `ffprobe`。生成 MiniMax 动作母版时，再设置
-`ZENMUX_API_KEY`；只处理已有视频或序列帧时不需要密钥。需要作为 Skill 使用时，
-将仓库目录放进所用 Agent 的 Skills 目录即可。
+告诉 Agent：帮我安装「https://github.com/oil-oil/oil-motion」这个 Skill。
 
 ## 它解决什么
 
