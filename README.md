@@ -1,12 +1,9 @@
 <p align="center">
-  <img src="./assets/readme/hero.svg" width="100%" alt="Oil Motion 把首尾关键帧和 MiniMax 视频编译成由滚动、指针或拖拽控制的网页交互动画">
+  <img src="./assets/readme/hero.svg" width="100%" alt="Oil Motion 设计并实现由滚动、指针或拖拽控制的网页交互动画">
 </p>
 
-Oil Motion 是一个 Agent 通用的交互动画 Skill，也可以脱离 Agent 直接运行脚本。它先用关键帧锁定正确结果，再让
-MiniMax H3 生成连续动作母版，最后通过确定性脚本完成切帧、质检、压缩、打包和网页
-输入映射。
-
-生成模型负责画面和动作，程序负责清晰度、性能与交互稳定性。
+Oil Motion 是一个 Agent 通用的交互动画 Skill。它可以帮你构思动作、生成素材、
+处理动画帧、优化性能，并把最终效果接入网页交互。
 
 ## 演示
 

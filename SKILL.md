@@ -1,6 +1,6 @@
 ---
 name: oil-motion
-description: "Ideate, generate, process, optimize, implement, and explain high-performance interactive web motion made from AI image-to-video. Use for product reveals, exploded views, assembly or disassembly, cutaways, material transformations, camera fly-throughs, chapter transitions, diagrams, interfaces, characters, mascots, or other continuous visual changes driven by pointer position, scroll progress, dragging, touch, device orientation, audio, data, or component state. The core workflow is reference images → generated and approved first/last keyframes → MiniMax H3 video between keyframes → deterministic frame extraction, QA, interpolation, compression, atlas/video packaging, runtime mapping, and reusable explainers. Do not use for ordinary one-off CSS transitions or conventional linear video editing with no interactive control."
+description: "Design, implement, optimize, and explain interactive web animations driven by scroll, pointer, drag, touch, device orientation, audio, data, or component state. Use when a webpage needs responsive visual motion for products, interfaces, diagrams, characters, or scene transitions."
 ---
 
 # Oil Motion
