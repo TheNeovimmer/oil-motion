@@ -1,0 +1,4 @@
+interface:
+  display_name: "Oil Motion"
+  short_description: "先生图锁定首尾帧，再生成并实现高质量 AI 交互动画"
+  default_prompt: "使用 $oil-motion 先设计并生成首尾关键帧，再生成连续 AI 视频并编译成交互动画。"
