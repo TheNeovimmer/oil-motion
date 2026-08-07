@@ -10,13 +10,7 @@ MiniMax H3 生成连续动作母版，最后通过确定性脚本完成切帧、
 
 ## 演示
 
-<p align="center">
-  <a href="./assets/demo/oil-motion-demo.mp4">
-    <img src="./assets/readme/demo-poster.webp" width="100%" alt="Oil Motion 在个人网站中根据鼠标位置控制小狗转头的真实演示">
-  </a>
-</p>
-
-<p align="center"><strong>▶ 点击图片播放 5 秒完整演示 · 60 FPS</strong></p>
+https://github.com/oil-oil/oil-motion/blob/main/assets/demo/oil-motion-demo.mp4
 
 ## 安装
 
