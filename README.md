@@ -1,255 +1,99 @@
 <p align="center">
-  <img src="./assets/readme/hero.svg" width="100%" alt="Oil Motion 设计并实现由滚动、指针或拖拽控制的网页交互动画">
+  <img src="./assets/readme/hero.svg" width="100%" alt="Oil Motion 把生成式视频变成可交互的网页动画">
 </p>
 
-Oil Motion 是一个 Agent 通用的交互动画 Skill。它可以帮你构思动作、生成素材、
-处理动画帧、优化性能，并把最终效果接入网页交互。
+Oil Motion 是一个 Agent 通用的交互动画 Skill。你只需要说明想让什么动、希望用户如何控制，Agent 会完成从画面设计、动画生成到网页接入的整个过程。
 
 ## 演示
 
 https://github.com/user-attachments/assets/08e26ad6-ca23-4f31-ac53-44c7692ba99d
 
-
 ## 安装
 
 告诉 Agent：帮我安装「https://github.com/oil-oil/oil-motion」这个 Skill。
 
-第一次生成视频时，Agent 会引导你输入一次 ZenMux API Key。密钥只保存在本机，
-后续使用会自动读取，不需要重复配置。
+## 它能做什么
 
-## 它解决什么
+- 页面向下滚动时，产品逐步展开、拆解或切换状态。
+- 鼠标移动时，角色、宠物或产品自然地看向当前位置。
+- 拖动进度时，让动画准确跟随手势前进或后退。
+- 在手机上使用触摸或设备方向控制动画。
+- 让动画自己播放，同时保留点击、悬停和页面状态的响应。
 
-- **结果不可控**：先验收首尾关键帧，不让视频模型临时发明终点。
-- **视频不能交互**：把连续动作编译成图集、序列帧或可精确定位的视频。
-- **动画容易卡顿**：根据实际展示大小选择合适的资源，不盲目增加帧数。
-- **生成结果难复用**：保留提示词、任务元数据、母版、质检报告和运行时参数。
+它不只负责“让画面动起来”，还会考虑动作是否自然、资源是否清晰、页面是否流畅，以及移动端是否可用。
 
-## 工作方式
+## 整个过程
 
 ```text
-参考图
+告诉 Agent 你想表达什么
   ↓
-生成并验收 K0、K1…Kn
+先生成几张关键画面，确认角色、产品和动作方向
   ↓
-MiniMax H3 生成相邻关键帧之间的动作母版
+把确认过的画面连接成一段完整动画
   ↓
-探测 → 切帧 → 裁停顿 → 查重 → 质检
+自动删除停顿、重复和异常画面，并控制文件大小
   ↓
-图集 / 全关键帧 MP4 / WebCodecs
-  ↓
-scroll / pointer / drag / touch / orientation
+把动画接入滚动、鼠标、拖动、触摸或手机方向
 ```
 
-Oil Motion 会先区分两类变化：
-
-- **语义运动**：产品拆解、肢体形变、材质变化、前后遮挡，由关键帧和 AI 视频完成。
-- **几何运动**：位移、缩放、裁切、时间映射、阻尼和限速，由程序完成。
-
-如果简单移动图片会让关节、接触点或遮挡变得不自然，就交给视频模型生成完整动作。
+简单来说：先把重要画面确认好，再生成它们之间的动作，最后把动画变成用户可以控制的网页效果。你不需要提前了解视频切帧、图集或浏览器动画技术。
 
 ## 快速开始
 
-在支持 Skills 的 Agent 中直接说明目标、素材和交互方式：
+如果已经有想法和素材，可以直接说：
 
 ```text
-使用 $oil-motion，把这两张已经验收的首尾图做成由滚动控制的产品爆炸动画。
+使用 $oil-motion，把这两张产品图做成随页面滚动逐步展开的动画。
+画面要保持清晰，手机上也要流畅。
 ```
 
-如果还没有动作方案，也可以只给出对象和目的：
+如果还没有具体方案，也可以让 Agent 先帮你想：
 
 ```text
-使用 $oil-motion，为这个产品首页设计一个随滚动变化的连续动画。
-先给出最多三个有明确表达目的的方向，再选择最适合实现的方案。
+使用 $oil-motion，为这个产品首页设计一个有明确表达目的的交互动画。
+先给我三个简单方向，说明每个方向适合表达什么，再选择一个开始制作。
 ```
 
-## 默认生产规则
+## 常见场景
 
-| 项目 | 默认值 |
+| 你想实现的效果 | 适合的控制方式 |
 | --- | --- |
-| 视频模型 | `minimax/minimax-h3` |
-| 动作验证 | `768p`、5 秒 |
-| 大尺寸终稿 | 关键帧通过后使用 `2K` |
-| 画幅 | 按首帧或参考图自动推断常用比例 |
-| 音频 | 交互资产最终显式移除 |
-| 首尾帧模式 | `first_frame + last_frame` |
-| 参考图模式 | 只传 `reference_image` |
+| 产品随着阅读逐步展开或拆解 | 页面滚动 |
+| 角色看向用户、物体跟随光标 | 鼠标移动 |
+| 自由查看产品结构或动画进度 | 拖动 |
+| 手机上的直接操控 | 触摸 |
+| 画面随着手机倾斜改变方向 | 设备方向 |
+| 点击后切换动作或状态 | 点击与组件状态 |
 
-MiniMax H3 的参考图模式和首尾帧模式互斥。`video_job.py` 会在联网前阻止混用，避免
-接口错误 `2013`。使用 `frames` 时也不能同时传 `duration`。
+## 你会得到什么
 
-## 两条交付路线
+根据项目需要，Agent 会交付其中一部分或全部内容：
 
-| 需求 | 推荐资产 | 适用原因 |
-| --- | --- | --- |
-| 透明背景、短序列、任意跳帧 | WebP 图集 | 一次请求，随机访问稳定 |
-| 高分辨率、不透明、一维滚动 | 全关键帧 MP4 | seek 稳定，内存远低于巨型图集 |
-| 图集超过纹理限制 | 分片图集或 WebCodecs | 保持单帧清晰度 |
-| 少量 hover / 点击状态 | 多段短资源 | 状态边界清楚 |
+- 可以继续修改的原始画面和动画母版。
+- 已整理、压缩并适合网页加载的动画资源。
+- 可以直接接入项目的交互代码。
+- 用来检查每一帧和当前交互状态的预览页面。
+- 对加载速度、移动端和低动态偏好的处理。
 
-压缩后的画面必须在实际页面中保持清晰。文件过大时优先更换格式，不要为了减小体积
-牺牲清晰度。
+最终格式由实际展示尺寸和交互方式决定。目标不是追求最小文件，而是在画面清晰的前提下，让加载和操作保持流畅。
 
-## MiniMax 动作母版
+## 怎样保证效果自然
 
-```bash
-export OIL_MOTION="/absolute/path/to/oil-motion"
-```
+- 开始生成前，先确认角色、产品、构图和重要动作。
+- 动画完成后，检查是否有闪烁、停顿、重复部件或比例变化。
+- 把效果放进真实页面测试，不只在单独的视频里查看。
+- 鼠标快速移动、滚动和反向操作时，动画也应保持稳定。
+- 资源尚未加载或用户关闭动态效果时，仍然显示合适的静态画面。
 
-如果还没有配置 ZenMux API Key，Agent 会先引导你完成一次本地配置。
+程序可以帮助整理和优化动画，但无法把错误的动作变成正确的动作。重要画面越明确，最后的结果越稳定。
 
-单向转场：
+## 第一次使用
 
-```bash
-python3 "$OIL_MOTION/scripts/video_job.py" \
-  --prompt-file source/prompt.txt \
-  --first-frame source/first-frame.png \
-  --last-frame source/last-frame.png \
-  --resolution 2K \
-  --output source/master.mp4
-```
+第一次需要生成动画时，Agent 会引导你配置所需的 API Key。密钥只保存在本机，之后会自动读取，不需要重复输入。
 
-循环动作：
+## 更多细节
 
-```bash
-python3 "$OIL_MOTION/scripts/video_job.py" \
-  --prompt-file source/prompt.txt \
-  --first-frame source/first-frame.png \
-  --loop-frame \
-  --resolution 768p \
-  --output source/master.mp4
-```
-
-身份、产品结构、Logo、构图和风格需要在关键帧生图阶段解决。首尾帧请求中不要再次
-附加 `reference_image`。
-
-## 一键编译滚动动画
-
-高分辨率的一维滚动动画可以直接编译成桌面与移动端版本：
-
-```bash
-python3 "$OIL_MOTION/scripts/compile_scroll_video.py" \
-  source/master.mp4 build/scroll \
-  --end-reference source/last-frame.png \
-  --desktop-width 1920 \
-  --mobile-width 1280
-```
-
-脚本会自动：
-
-1. 读取真实分辨率、帧率、时长和音轨。
-2. 切出 24 FPS 母版帧。
-3. 按目标尾帧裁掉停顿并删除近重复帧。
-4. 生成分析报告与编号接触表。
-5. 输出桌面、移动端全关键帧 H.264 MP4。
-6. 强制移除音轨并生成 `compile.json`。
-
-需要首尾连续播放的动画时使用 `--loop`。默认禁止上采样；目标宽度超过母版时会自动限制为母版宽度。
-
-## 图集与透明动画
-
-透明角色、视线跟随和需要随机访问的短序列使用媒体流水线：
-
-```bash
-python3 "$OIL_MOTION/scripts/motion_budget.py" \
-  --frames 120 \
-  --display 240x240 \
-  --max-texture 4096 \
-  --access random \
-  --strict
-
-python3 "$OIL_MOTION/scripts/motion_pipeline.py" extract \
-  source/master.mp4 frames/raw \
-  --fps 24 \
-  --key auto
-
-python3 "$OIL_MOTION/scripts/motion_pipeline.py" analyze frames/raw \
-  --output qa/analysis.json
-
-python3 "$OIL_MOTION/scripts/motion_pipeline.py" contact frames/raw \
-  --output qa/contact-sheet.jpg
-```
-
-查看接触表并通过验收后，再运行 `atlas`。不要用一键 `build` 跳过中间检查。
-
-## 工具箱
-
-| 脚本 | 作用 |
-| --- | --- |
-| `video_job.py` | 提交、轮询并下载 MiniMax H3 动作母版 |
-| `oil_motion_config.py` | 保存、检查或清除本机的 ZenMux API Key |
-| `motion_budget.py` | 计算单帧清晰度、采样密度和纹理预算 |
-| `motion_pipeline.py` | 探测、切帧、抠色、稳定、分析、接触表和图集 |
-| `loop_cleanup.py` | 选择接缝、裁尾部停顿并删除近重复帧 |
-| `optimize_motion.py` | 补帧对比与按清晰度门槛压缩 |
-| `compile_scroll_video.py` | 编译桌面与移动端全关键帧滚动视频 |
-| `create_explainer.py` | 生成“母版 → 帧 → 输入映射”的原理展示页 |
-
-## 支持的输入
-
-- `scroll`：产品拆解、章节变化、图表展开、场景转场。
-- `pointer`：角色朝向、产品方向、视线跟随。
-- `drag`：时间轴、结构拆装、进度预览。
-- `touch`：移动端直接控制。
-- `orientation`：经过授权与校准的陀螺仪输入。
-- `audio / data / state`：音量、实时数据或离散组件状态。
-
-二维输入不能强行压进一条左右往返视频。距离和方向都会改变姿态时，需要二维采样。
-
-## 质量门槛
-
-交付前至少检查：
-
-- 身份、结构、比例、锚点和光线在全序列一致。
-- 没有多余肢体、部件复制、硬切、闪帧和异常停顿。
-- 透明素材没有色键残留，细线和内部白色区域完整。
-- 快速反向时不粘滞、不抽动、不越界。
-- 滚动、缩放和设备旋转后，输入位置仍然正确。
-- 冷缓存有首帧或 poster，资源失败时能回退静态画面。
-- 最终资源在实际页面中保持清晰。
-- `prefers-reduced-motion` 有静态替代。
-
-程序可以修复轻微漂移、颜色、重复帧和编码问题，不能修复错误的动作语义。
-
-## 运行环境
-
-- Python 3
-- Pillow
-- ffmpeg
-- ffprobe
-- ZenMux API Key
-
-```bash
-python3 -m pip install -r scripts/requirements.txt
-ffmpeg -version
-ffprobe -version
-```
-
-## 输出结构
-
-```text
-motion-name/
-├── source/
-│   ├── first-frame.png
-│   ├── last-frame.png
-│   ├── prompt.txt
-│   ├── master.mp4
-│   └── master.job.json
-├── frames/
-│   ├── raw/
-│   └── final/
-├── qa/
-│   ├── analysis.json
-│   └── contact-sheet.jpg
-└── final/
-    ├── motion.webp
-    ├── motion-scrub-desktop.mp4
-    ├── motion-scrub-mobile.mp4
-    ├── motion.json
-    └── implementation.*
-```
-
-详细原则、提示词、运行时选择和 QA 规则见 [`SKILL.md`](./SKILL.md) 与
-[`references/`](./references/)。
+如果你需要了解提示词、生成参数、资源处理脚本或网页接入方式，可以继续查看 [`SKILL.md`](./SKILL.md) 和 [`references/`](./references/)。这些技术细节不会影响日常使用。
 
 ## License
 
