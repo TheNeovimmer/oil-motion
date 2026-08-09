@@ -44,6 +44,8 @@ python3 "$OIL_MOTION/scripts/oil_motion_config.py" set
 8. 动画创意必须同时说明输入、视觉回应和表达目的；不要只罗列效果名称。
 9. 压缩前必须确认最大实际 CSS 展示尺寸和目标 DPR。清晰度是硬门槛，目标体积是第二约束；无法同时满足时更换资产格式，不得继续缩小。
 10. 先分析对象能如何变化，再设计首尾关键帧。绿幕、雪碧图和视频编码只是交付手段，不是创意入口。
+11. 所有生成关键帧和动作母版都必须使用均匀色键背景：默认纯绿，主体含大量绿色时改用洋红。程序抠成 Alpha 后，由页面独立提供最终背景；不得生成或交付把页面背景烧进主体的交互素材。
+12. AI 动作母版通过内容验收后必须程序插帧，默认目标为 48 FPS；插帧结果与原始帧接触表都通过后，才能继续清理、稳定和打包。
 
 ### 不要混淆语义运动与几何运动
 
@@ -97,12 +99,25 @@ keyframes: first | intermediate[] | last
 clip_chain: 每段视频使用哪两个相邻关键帧
 rest_state: 初始和失去输入时的状态
 loop: open | closed | none
-background: transparent | chroma | opaque
+background: chroma
+key_color: "#00FF00" | "#FF00FF"
+background_owner: page
+matte_delivery: required
 anchor: fixed-body | center | bottom | free
 destination: 页面位置、显示尺寸和设备
 quality_target: 分辨率、参数采样密度、文件预算
+interpolation_fps: 48
 reduced_motion: 静态替代状态
 ```
+
+### 固定绿幕管线（硬门槛）
+
+1. 所有由图片或视频模型生成的关键帧、相邻转场和动作母版，都使用完全均匀的色键背景，不存在“直接生成最终场景背景”的分支。
+2. 默认色键是 `#00FF00`；主体含大量绿色时只能切换为 `#FF00FF`，不能切换成真实场景、渐变、黑色或白色背景。
+3. 背景始终属于页面层。媒体处理必须从色键源生成 Alpha 帧或独立遮罩，再由 CSS、Canvas 或合成程序叠加最终背景。
+4. 必须同时保留原始色键图片/视频与抠图后的 Alpha 母版。带背景的预览只能是派生产物，不能成为网页唯一素材或后续加工源。
+5. 在生成前写清色键颜色、Alpha/遮罩生成步骤和最终页面叠层方式。任意一项缺失都不得提交生成任务。
+6. 用户要求更换背景时，只修改页面背景或重新合成；禁止重新生成主体。若现有产物无法这样处理，说明此前管线不合格并回到色键源修复。
 
 ### 参数模型
 
@@ -143,10 +158,6 @@ reduced_motion: 静态替代状态
 [references/minimax-spritesheet.md](references/minimax-spritesheet.md)。该流程是默认主路径，
 不得跳过阶段门槛或直接从生成视频打包最终图集。
 
-高分辨率、不透明、由滚动控制的一维长时间轴，优先阅读
-[references/minimax-scroll-video.md](references/minimax-scroll-video.md)，编译成桌面与
-移动端全关键帧 MP4，不要把十几张巨型图集切片交给浏览器。
-
 ### C. 已有视频 → 交互资产
 
 跳过生成，只做媒体分析与编译。先运行 `probe`，确认分辨率、帧率、帧数、时长和颜色格式。
@@ -164,13 +175,12 @@ reduced_motion: 静态替代状态
 3. 先生图并验收首帧、尾帧和参考图；静态构图未通过时不得提交视频。
 4. 用 `video_job.py` 提交 MiniMax，保存母版视频、返回尾帧和脱敏任务元数据。
 5. 完整观看母版并制作接触表；身份、肢体、动作方向或镜头错误时重新生成。
-6. 依次完成抠图切帧、必要的闭环清理、可选稳定、分析和最终接触表。
-7. 最终分析通过后按访问模式选择 `atlas` 或 `compile_scroll_video.py`；不要用
-   `build` 隐藏中间验收。
-8. 用 `interactive-motion.ts` 实现图集映射；滚动视频按
-   [references/minimax-scroll-video.md](references/minimax-scroll-video.md) 实现
-   `currentTime` 映射、预加载、阻尼、限速和静态降级。
-9. 在目标 CSS 尺寸、DPR、冷缓存、快速反向和移动端条件下验收。
+6. 用 `optimize_motion.py interpolate` 插帧到 Motion Brief 指定帧率，默认 48 FPS，并在同一步抠色保留 Alpha/遮罩。
+7. 检查原始帧、插帧接触表和对比报告；出现重影、轮廓撕裂、结构扭曲或新增闪帧时不得继续打包。
+8. 对合格插帧序列完成必要的闭环清理、可选稳定、分析和最终接触表。
+9. 最终分析通过后，按项目已经明确的交互方式打包透明资产；不要擅自增加新的播放或时间轴方案，也不要用 `build` 隐藏中间验收。
+10. 用 `interactive-motion.ts` 实现图集映射、预加载、阻尼、限速和静态降级。
+11. 在目标 CSS 尺寸、DPR、冷缓存、快速反向和移动端条件下验收。
 
 每一步的参数矩阵、命令和停止条件见
 [references/minimax-spritesheet.md](references/minimax-spritesheet.md)。
@@ -184,9 +194,10 @@ reduced_motion: 静态替代状态
 5. 固定镜头、画幅、主体大小和锚点，除非镜头运动本身就是交互内容。
 6. 一条视频只承担一个连续变量；复杂状态拆成多个首尾帧片段。
 7. 闭环动画明确规定运动方向、首尾姿态和“不中途停顿、不折返”。
-8. 抠图素材优先使用均匀色键背景。背景均匀比严格命中某个十六进制颜色更重要，因为脚本会从边缘采样真实色键。
+8. 所有生成素材必须使用均匀色键背景。背景均匀比严格命中某个十六进制颜色更重要，因为脚本会从边缘采样真实色键。
 9. 若主体含大量绿色，用 `#FF00FF`；否则默认 `#00FF00`。
 10. 避免运动模糊、景深、阴影落地、半透明粒子和接触边缘的道具，这些会破坏抠图和帧稳定性。
+11. 无论最终页面使用什么颜色，都要保留原始色键视频、Alpha 帧或独立遮罩；不得只保留已经合成背景的素材。
 
 生成后先看完整视频和编号接触表，不要只看首帧。
 
@@ -219,7 +230,7 @@ python3 "$OIL_MOTION/scripts/motion_budget.py" \
 - `requiredCell` 是交付图集每一帧的最低像素，不是源视频画幅。
 - 滚动驱动必须传 `--scroll-pages`；默认按每屏 24 个独立姿态检查采样密度。阻尼只能平滑输入，不能补出不存在的姿态。
 - `--strict` 存在上采样、源素材不足或纹理越界时返回非零退出码。
-- 单图集放不下时按访问模式选择分片图集、视频或 WebCodecs，不要为了塞进一张图集降低单帧清晰度。
+- 单图集放不下时使用分片图集，或重新调整已确认的帧数与展示尺寸；不要为了塞进一张图集降低单帧清晰度。
 - 正式生成前先把静态参考帧按最终 CSS 尺寸放入目标页面，检查构图、裁切和边缘质量；静态预览未通过时停止生产。
 
 ### 用生成接口锁定首尾帧
@@ -277,42 +288,22 @@ ffprobe -version
 python3 "$OIL_MOTION/scripts/motion_pipeline.py" probe source.mp4
 ```
 
-一键生成透明帧、报告、接触表、WebP 图集和清单：
+母版验收后必须插帧并抠色，默认目标为 48 FPS：
 
 ```bash
-python3 "$OIL_MOTION/scripts/motion_pipeline.py" build source.mp4 build/motion \
-  --fps 24 \
-  --key auto \
-  --cell-width 240 \
-  --cell-height 240 \
-  --quality 88
+python3 "$OIL_MOTION/scripts/optimize_motion.py" interpolate \
+  source.mp4 build/interpolated \
+  --fps 48 \
+  --key auto
 ```
 
-背景不需要透明时：
+必须检查 `build/interpolated/qa/contact-sheet-original.jpg`、
+`build/interpolated/qa/contact-sheet-interpolated.jpg` 和
+`build/interpolated/interpolation-report.json`。插帧不是可选优化；生成流程也禁止使用 `--key none` 跳过抠色。
 
-```bash
-python3 "$OIL_MOTION/scripts/motion_pipeline.py" build source.mp4 build/motion \
-  --fps 24 --key none --cell-width 320 --cell-height 180
-```
-
-仅切帧：
-
-```bash
-python3 "$OIL_MOTION/scripts/motion_pipeline.py" extract source.mp4 frames \
-  --fps 24 --key auto
-```
-
-只有源视频帧率不足且相邻动作已经连续时，才尝试运动估计插帧：
-
-```bash
-python3 "$OIL_MOTION/scripts/motion_pipeline.py" extract source.mp4 frames-48 \
-  --fps 48 --interpolate --key auto
-```
-
-需要补帧前后对比或按目标体积自动压缩时，阅读
+需要按目标体积自动压缩时，阅读
 [references/optimization.md](references/optimization.md)，再使用
-`scripts/optimize_motion.py`。不要只凭“生成成功”判断补帧质量，也不要手动反复猜
-WebP 质量和视频码率。
+`scripts/optimize_motion.py`。不要手动反复猜 WebP 质量。
 
 固定身体的朝向动画若存在轻微大小和位置漂移，可选用稳定化。自由运动和镜头运动不要使用：
 
@@ -354,20 +345,6 @@ python3 "$OIL_MOTION/scripts/loop_cleanup.py" frames frames-clean \
   --duplicate-threshold 0.003
 ```
 
-高分辨率、不透明的滚动转场可一键编译成桌面与移动端全关键帧 MP4：
-
-```bash
-python3 "$OIL_MOTION/scripts/compile_scroll_video.py" \
-  source/master.mp4 build/scroll \
-  --end-reference source/last-frame.png \
-  --desktop-width 1920 \
-  --mobile-width 1280
-```
-
-两个宽度都应按“最大实际 CSS 展示宽度 × 目标 DPR”填写。脚本保持源画幅、禁止默认
-上采样、裁尾、查重、生成接触表与分析报告，并使用 `-an` 移除音轨。详细规则见
-[references/minimax-scroll-video.md](references/minimax-scroll-video.md)。
-
 需要同一主体从轨道一端精确移动到另一端时，先准备透明主体层，再用程序生成身份和尺寸完全一致的首尾帧：
 
 ```bash
@@ -388,9 +365,7 @@ python3 "$OIL_MOTION/scripts/compose_travel_frames.py" subject.png \
 阅读 [references/runtime.md](references/runtime.md)，再根据访问方式选择：
 
 - 透明、短时长、需要任意跳帧：WebP/PNG 图集。
-- 帧数很多、图集超过纹理限制：分片图集或序列帧。
-- 长时间轴、高分辨率、主要顺序播放：视频解码或 WebCodecs。
-- 一维滚动需要频繁定位且不透明：全关键帧 MP4，换取更稳定的 seek。
+- 帧数很多、图集超过纹理限制：分片图集。
 - 少量离散状态：多个短视频或多条图集。
 
 不要因为已经生成了视频就默认 `<video autoplay>`。随机定位和交互响应才决定运行时格式。
@@ -430,6 +405,7 @@ python3 "$OIL_MOTION/scripts/compose_travel_frames.py" subject.png \
 
 - 主体身份、比例、锚点和光线在全序列一致。
 - 没有多余肢体、瞬时变形、亮度闪烁、重复帧堆积或首尾断层。
+- 已完成目标帧率插帧；原始与插帧接触表均已检查，未出现重影、轮廓撕裂或结构扭曲。
 - 色键完全透明，边缘没有绿色/洋红溢色，细线和半透明细节仍完整。
 - 快速反复移动输入时不粘滞、不抽动、不越界。
 - 低速跟随自然，高速转向受限但不明显落后。
@@ -451,15 +427,17 @@ python3 "$OIL_MOTION/scripts/compose_travel_frames.py" subject.png \
 motion-name/
 ├── source/                 # 参考图和原始视频
 ├── frames/raw/             # 原始切帧
-├── frames/final/           # 抠图、稳定后的母版帧
+├── frames/interpolated/    # 强制插帧并抠色后的 Alpha 帧
+├── frames/final/           # 抠图、稳定后的 Alpha 母版帧
+├── matte/                  # Alpha 未嵌入母版时必须提供的独立遮罩
 ├── qa/
 │   ├── analysis.json
 │   └── contact-sheet.jpg
 └── final/
     ├── motion.webp         # 随机访问图集路线
-    ├── motion-scrub-*.mp4  # 高分辨率一维滚动路线
+    ├── motion-*.webp       # Alpha 图集或分片图集
     ├── motion.json         # 或 compile.json，保存帧数、尺寸和映射信息
     └── implementation.*    # 项目运行时代码
 ```
 
-交付时说明：交互参数模型、最终提示词、源视频、处理命令、关键参数、分析报告、最终资产、运行时实现和降级方案。
+交付时说明：交互参数模型、最终提示词、源视频、处理命令、关键参数、分析报告、最终资产、页面背景、Alpha/遮罩母版、运行时实现和降级方案。

@@ -91,7 +91,7 @@ python3 "$OIL_MOTION/scripts/motion_budget.py" \
 停止条件：
 
 - 最低单帧像素高于计划的图集单元格。
-- 单张图集超过纹理上限且没有改为分片图集、序列帧或视频解码。
+- 单张图集超过纹理上限且没有改为分片图集。
 - 静态首帧放到目标页面后存在裁切、模糊、比例或锚点问题。
 
 ### 2. 编写并验收提示词
@@ -158,29 +158,29 @@ python3 "$OIL_MOTION/scripts/motion_pipeline.py" probe source/master.mp4
 
 程序只能修复轻微位置、尺寸、颜色和重复帧问题，不能修复错误的动作语义。
 
-### 5. 抠图、切帧与原始检查
+### 5. 强制插帧、抠图与检查
 
 ```bash
-python3 "$OIL_MOTION/scripts/motion_pipeline.py" extract \
-  source/master.mp4 frames/raw \
-  --fps 24 \
+python3 "$OIL_MOTION/scripts/optimize_motion.py" interpolate \
+  source/master.mp4 build/interpolated \
+  --fps 48 \
   --key auto
 
-python3 "$OIL_MOTION/scripts/motion_pipeline.py" analyze frames/raw \
-  --output qa/raw-analysis.json
-
-python3 "$OIL_MOTION/scripts/motion_pipeline.py" contact frames/raw \
-  --output qa/raw-contact.jpg \
+python3 "$OIL_MOTION/scripts/motion_pipeline.py" contact build/interpolated/frames \
+  --output qa/interpolated-contact.jpg \
   --columns 8
 ```
 
-检查 `raw-contact.jpg` 和分析报告：
+必须检查 `build/interpolated/qa/contact-sheet-original.jpg`、
+`build/interpolated/qa/contact-sheet-interpolated.jpg`、`build/interpolated/interpolation-report.json` 和
+`qa/interpolated-contact.jpg`：
 
 - 四角透明，主体内部没有误删，边缘没有明显绿边或洋红边。
 - 帧顺序与动作方向一致。
 - 没有空帧、亮度闪帧、大小突变、中心突变或异常重复段。
+- 没有重影、双轮廓、边缘撕裂、部件穿插或结构扭曲。
 
-背景不均匀或主体被严重误删时重新生成母版，不要无限扩大抠色阈值。
+插帧是强制步骤。背景不均匀、主体被严重误删或插帧出现伪影时停止处理，不得跳过插帧直接使用原始帧。
 
 ### 6. 闭环清理与可选稳定
 
@@ -188,7 +188,7 @@ python3 "$OIL_MOTION/scripts/motion_pipeline.py" contact frames/raw \
 
 ```bash
 python3 "$OIL_MOTION/scripts/loop_cleanup.py" \
-  frames/raw frames/clean \
+  build/interpolated/frames frames/clean \
   --seam-window 24 \
   --duplicate-threshold 0.003 \
   --report qa/loop-cleanup.json
@@ -203,7 +203,7 @@ python3 "$OIL_MOTION/scripts/motion_pipeline.py" normalize \
   --max-scale-change 0.08
 ```
 
-不需要闭环清理或稳定时，将合格帧复制到 `frames/final`。自由运动、镜头运动和真实透视变化禁止稳定。
+不需要闭环清理或稳定时，将合格的插帧序列复制到 `frames/final`。自由运动、镜头运动和真实透视变化禁止稳定。
 
 ### 7. 最终门槛与图集
 
@@ -239,7 +239,7 @@ python3 "$OIL_MOTION/scripts/motion_budget.py" \
 预算要求分片时不得通过缩小单帧强塞进一张图集。
 以上数字只是一个能放入 4096 纹理的完整示例；实际项目必须使用 Motion Brief
 中的显示尺寸、DPR 和最终帧数重新计算。若结果推荐分片图集，而当前运行时尚未支持
-分片清单，就停止打包并改用序列帧或视频解码，不得假装单图集已经交付。
+分片清单，就停止打包并改用分片图集，不得假装单图集已经交付。
 
 ### 8. 网页实现与验收
 

@@ -6,15 +6,9 @@
 |---|---|---|
 | 透明背景、少于约 300 帧、任意跳转 | WebP 图集 | 一次请求，随机访问稳定 |
 | 图集超过 4096×4096 或设备纹理限制 | 分片图集 | 控制内存和纹理尺寸 |
-| 很长的顺序滚动时间轴 | 视频 + 解码控制 | 压缩率远高于独立帧 |
-| 高分辨率一维滚动且频繁 seek | 全关键帧 MP4 | 一个请求、定位稳定、解码内存低于巨型图集 |
-| 高频随机定位且浏览器目标明确 | WebCodecs | 更精确地访问解码帧 |
 | 少量 hover/点击状态 | 多段短资源 | 状态边界清楚 |
 
 图集文件体积小不代表解码内存小。RGBA 解码内存约为 `宽 × 高 × 4`。3840×3600 图集约需 52.7 MiB，因此应在真实移动设备上测试。
-
-全关键帧 MP4 比普通视频大，但每帧都能直接解码，适合滚动时反复设置
-`currentTime`。它仍然不是随机二维参数的替代品；二维方向继续使用图集或 WebCodecs。
 
 ## 图集约束
 
@@ -33,7 +27,7 @@ python3 scripts/motion_budget.py \
   --frames 180 --display 240x240 --dpr 2 --max-texture 4096
 ```
 
-如果单帧像素满足要求后图集超出纹理上限，优先分片或改用视频解码，不要缩小单元格强行装入单张图集。
+如果单帧像素满足要求后图集超出纹理上限，优先分片，不要缩小单元格强行装入单张图集。
 
 ```css
 .motion-sprite {
@@ -54,17 +48,6 @@ targetFrame = progress * (frameCount - 1)
 ```
 
 滚动监听只记录目标值，在 `requestAnimationFrame` 中更新。页面布局变化时重新计算起止位置。
-
-使用全关键帧视频时：
-
-```text
-targetFrame = round(progress * (frameCount - 1))
-targetTime = targetFrame / fps
-```
-
-只有整数目标帧改变时才写 `video.currentTime`。桌面与移动端分别提供按实际展示尺寸和
-DPR 编译的版本，避免移动端下载过大的桌面资源。使用
-`scripts/compile_scroll_video.py` 生成两个版本，并显式移除音轨。
 
 ## 环形方向参数
 
@@ -133,8 +116,7 @@ deltaTime cap: 1/30 秒
 ## 预加载
 
 - 首屏图集使用 `<link rel="preload" as="image">` 或框架等价能力。
-- 首屏滚动视频使用 `<link rel="preload" as="video">` 或
-  `video.preload = "auto"`；同时保留首帧 poster。
+- 首屏预加载清单、首帧和首个图集分片，并保留静态 Alpha 首帧。
 - 用 `Image.decode()` 确认资源可绘制。
 - 加载完成前显示静态首帧或简洁加载层，不显示多个叠加帧。
 - 资源失败时解除页面锁定并回退静态图。
