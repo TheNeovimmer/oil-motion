@@ -36,15 +36,15 @@ python3 "$OIL_MOTION/scripts/oil_motion_config.py" set
 
 1. 先定义交互参数和关键状态，再生图、再生视频。没有参数模型和首尾关键帧，就不提交视频。
 2. 唯一视觉生产主线是：参考图 → 生成并验收首尾关键帧 → AI 视频补全连续变化。多阶段动画拆成多组相邻关键帧，逐段生成并串联。
-3. 把 AI 视频视为动作母版，不把它直接当最终实现。
-4. 程序只处理确定性工作：探测、切帧、抠色、去溢色、稳定、查重、检测闪帧、缩放、图集打包、清单生成、预加载、文字覆盖和交互映射。
+3. 把 AI 视频视为动作母版；只有自动选择结果为 `chroma-video` 时，才把编译后的绿幕视频作为网页资产，并由 WebGL 实时生成 Alpha。
+4. 程序只处理确定性工作：探测、插帧、切帧、离线或实时抠色、去溢色、稳定、查重、检测闪帧、编码、图集打包、清单生成、预加载、文字覆盖和交互映射。
 5. 让生成模型处理主要视觉内容和连续性：角色身份、产品形态、结构变化、姿态、镜头内动作和风格。
 6. 先保留高分辨率母版，检查通过后再压缩。不要从压缩后的网页资源继续加工。
 7. 默认使用单图层离散换帧，不通过相邻帧透明叠加伪造流畅度；叠加会产生虚影。
 8. 动画创意必须同时说明输入、视觉回应和表达目的；不要只罗列效果名称。
 9. 压缩前必须确认最大实际 CSS 展示尺寸和目标 DPR。清晰度是硬门槛，目标体积是第二约束；无法同时满足时更换资产格式，不得继续缩小。
 10. 先分析对象能如何变化，再设计首尾关键帧。绿幕、雪碧图和视频编码只是交付手段，不是创意入口。
-11. 所有生成关键帧和动作母版都必须使用均匀色键背景：默认纯绿，主体含大量绿色时改用洋红。程序抠成 Alpha 后，由页面独立提供最终背景；不得生成或交付把页面背景烧进主体的交互素材。
+11. 所有生成关键帧和动作母版都必须使用均匀色键背景：默认纯绿，主体含大量绿色时改用洋红。图集在构建时抠成 Alpha，视频在 WebGL 运行时抠成 Alpha；页面独立提供最终背景。
 12. AI 动作母版通过内容验收后必须程序插帧，默认目标为 48 FPS；插帧结果与原始帧接触表都通过后，才能继续清理、稳定和打包。
 
 ### 不要混淆语义运动与几何运动
@@ -70,7 +70,7 @@ geometric_motion: 由程序精确控制的运动
 rest_state: 没有输入时的状态
 keyframes: 需要生成的起点、中间点和终点图片
 clip_chain: 相邻关键帧如何组成连续视频片段
-delivery_format: 视频、图集或序列帧
+delivery_format: auto
 cost_and_risk: 主要性能成本与失败风险
 ```
 
@@ -103,6 +103,7 @@ background: chroma
 key_color: "#00FF00" | "#FF00FF"
 background_owner: page
 matte_delivery: required
+delivery: alpha-atlas | chroma-video  # 由预算脚本填写，不询问用户
 anchor: fixed-body | center | bottom | free
 destination: 页面位置、显示尺寸和设备
 quality_target: 分辨率、参数采样密度、文件预算
@@ -114,8 +115,8 @@ reduced_motion: 静态替代状态
 
 1. 所有由图片或视频模型生成的关键帧、相邻转场和动作母版，都使用完全均匀的色键背景，不存在“直接生成最终场景背景”的分支。
 2. 默认色键是 `#00FF00`；主体含大量绿色时只能切换为 `#FF00FF`，不能切换成真实场景、渐变、黑色或白色背景。
-3. 背景始终属于页面层。媒体处理必须从色键源生成 Alpha 帧或独立遮罩，再由 CSS、Canvas 或合成程序叠加最终背景。
-4. 必须同时保留原始色键图片/视频与抠图后的 Alpha 母版。带背景的预览只能是派生产物，不能成为网页唯一素材或后续加工源。
+3. 背景始终属于页面层。图集路线在构建时生成 Alpha；视频路线保留绿幕像素，在 WebGL 中实时生成 Alpha。两条路线都不能把最终页面背景烧进媒体。
+4. 必须保留原始色键图片/视频。图集路线同时保留 Alpha 帧；视频路线保留可复现的色键参数和静态 Alpha 降级图。带背景预览只能是派生产物。
 5. 在生成前写清色键颜色、Alpha/遮罩生成步骤和最终页面叠层方式。任意一项缺失都不得提交生成任务。
 6. 用户要求更换背景时，只修改页面背景或重新合成；禁止重新生成主体。若现有产物无法这样处理，说明此前管线不合格并回到色键源修复。
 
@@ -154,9 +155,9 @@ reduced_motion: 静态替代状态
 
 涉及提示词时阅读 [references/prompting.md](references/prompting.md)。
 
-使用 MiniMax 生成动作母版并交付雪碧图时，必须同时阅读并按顺序执行
-[references/minimax-spritesheet.md](references/minimax-spritesheet.md)。该流程是默认主路径，
-不得跳过阶段门槛或直接从生成视频打包最终图集。
+使用 MiniMax 生成动作母版时，先完成自动交付选择。结果为 `alpha-atlas` 才阅读并执行
+[references/minimax-spritesheet.md](references/minimax-spritesheet.md)；结果为 `chroma-video` 则阅读
+[references/chroma-video.md](references/chroma-video.md)。两条路线共享相同的关键帧、母版、插帧和验收门槛。
 
 ### C. 已有视频 → 交互资产
 
@@ -171,19 +172,20 @@ reduced_motion: 静态替代状态
 只要路线包含“MiniMax 生成视频并拆成可交互帧”，就按以下顺序执行：
 
 1. 用 Motion Brief 固定输入参数、动作方向、起止状态、锚点和静止帧。
-2. 运行 `motion_budget.py --strict`，预算不通过就先改尺寸、帧数或资产格式。
+2. 运行 `motion_budget.py --strict`，把 `delivery.selected` 写入 Motion Brief；不得让用户选择图集或视频。
 3. 先生图并验收首帧、尾帧和参考图；静态构图未通过时不得提交视频。
 4. 用 `video_job.py` 提交 MiniMax，保存母版视频、返回尾帧和脱敏任务元数据。
 5. 完整观看母版并制作接触表；身份、肢体、动作方向或镜头错误时重新生成。
-6. 用 `optimize_motion.py interpolate` 插帧到 Motion Brief 指定帧率，默认 48 FPS，并在同一步抠色保留 Alpha/遮罩。
+6. 强制插帧到 Motion Brief 指定帧率，默认 48 FPS：图集路线用 `optimize_motion.py interpolate --key auto`；视频路线由 `compile_scroll_video.py` 用 `--key none` 插帧并保留绿幕。
 7. 检查原始帧、插帧接触表和对比报告；出现重影、轮廓撕裂、结构扭曲或新增闪帧时不得继续打包。
 8. 对合格插帧序列完成必要的闭环清理、可选稳定、分析和最终接触表。
-9. 最终分析通过后，按项目已经明确的交互方式打包透明资产；不要擅自增加新的播放或时间轴方案，也不要用 `build` 隐藏中间验收。
-10. 用 `interactive-motion.ts` 实现图集映射、预加载、阻尼、限速和静态降级。
+9. 最终分析通过后，严格按自动选择结果打包：`alpha-atlas` 生成单张 Alpha 图集；`chroma-video` 生成全关键帧绿幕 MP4。不要同时交付两套主实现。
+10. 两条路线都用 `interactive-motion.ts` 控制整数帧；视频路线另外使用 `chroma-video-renderer.ts` 实时抠色。
 11. 在目标 CSS 尺寸、DPR、冷缓存、快速反向和移动端条件下验收。
 
-每一步的参数矩阵、命令和停止条件见
-[references/minimax-spritesheet.md](references/minimax-spritesheet.md)。
+后续命令和停止条件按 `delivery` 分别见
+[references/minimax-spritesheet.md](references/minimax-spritesheet.md) 与
+[references/chroma-video.md](references/chroma-video.md)。
 
 ## 3. 先生图，再生成动作母版
 
@@ -203,16 +205,19 @@ reduced_motion: 静态替代状态
 
 ### 在生成前检查资源预算
 
-使用 `scripts/motion_budget.py` 把最终显示约束转换成最低单帧像素和图集分片数：
+使用 `scripts/motion_budget.py` 把最终显示约束转换成最低单帧像素，并自动选择交付方式：
 
 ```bash
 python3 "$OIL_MOTION/scripts/motion_budget.py" \
   --frames 123 \
   --display 268x468 \
   --dpr 2 \
+  --driver scroll \
+  --parameter-space linear \
   --scroll-pages 4 \
   --max-texture 4096 \
-  --access random
+  --report build/motion-budget.json \
+  --strict
 ```
 
 已有源视频或图集时，同时传入尺寸进行阻断检查：
@@ -222,16 +227,22 @@ python3 "$OIL_MOTION/scripts/motion_budget.py" \
   --frames 123 \
   --display 268x468 \
   --dpr 2 \
+  --driver scroll \
+  --parameter-space linear \
   --source 768x1344 \
-  --cell 192x336 \
+  --report build/motion-budget.json \
   --strict
 ```
 
-- `requiredCell` 是交付图集每一帧的最低像素，不是源视频画幅。
+- `delivery.selected` 是唯一交付决策：`alpha-atlas` 或 `chroma-video`。Agent 直接执行，不向用户抛技术选项。
+- `requiredCell` 是每个可交互画面的最低像素；图集用作单元格尺寸，视频用作输出分辨率下限。
 - 滚动驱动必须传 `--scroll-pages`；默认按每屏 24 个独立姿态检查采样密度。阻尼只能平滑输入，不能补出不存在的姿态。
-- `--strict` 存在上采样、源素材不足或纹理越界时返回非零退出码。
-- 单图集放不下时使用分片图集，或重新调整已确认的帧数与展示尺寸；不要为了塞进一张图集降低单帧清晰度。
+- `--strict` 存在上采样、源素材不足、时间采样不足，或必须使用图集的二维参数超预算时返回非零退出码。
+- 资源格式、阈值和超预算处理全部采用预算报告，不在这里重复判断。
+- 二维参数不能压成一条视频。若二维图集超预算，自动降低采样密度、拆状态或调整显示尺寸，并重新预算。
 - 正式生成前先把静态参考帧按最终 CSS 尺寸放入目标页面，检查构图、裁切和边缘质量；静态预览未通过时停止生产。
+
+完整规则、阈值和示例见 [references/delivery-selection.md](references/delivery-selection.md)。
 
 ### 用生成接口锁定首尾帧
 
@@ -288,31 +299,22 @@ ffprobe -version
 python3 "$OIL_MOTION/scripts/motion_pipeline.py" probe source.mp4
 ```
 
-母版验收后必须插帧并抠色，默认目标为 48 FPS：
-
-```bash
-python3 "$OIL_MOTION/scripts/optimize_motion.py" interpolate \
-  source.mp4 build/interpolated \
-  --fps 48 \
-  --key auto
-```
-
-必须检查 `build/interpolated/qa/contact-sheet-original.jpg`、
-`build/interpolated/qa/contact-sheet-interpolated.jpg` 和
-`build/interpolated/interpolation-report.json`。插帧不是可选优化；生成流程也禁止使用 `--key none` 跳过抠色。
+插帧和打包严格执行 `delivery` 对应的参考流程：图集读取
+[references/minimax-spritesheet.md](references/minimax-spritesheet.md)，视频读取
+[references/chroma-video.md](references/chroma-video.md)。不要混用两条路线的抠色命令。
 
 需要按目标体积自动压缩时，阅读
 [references/optimization.md](references/optimization.md)，再使用
 `scripts/optimize_motion.py`。不要手动反复猜 WebP 质量。
 
-固定身体的朝向动画若存在轻微大小和位置漂移，可选用稳定化。自由运动和镜头运动不要使用：
+`alpha-atlas` 的固定身体动画若存在轻微大小和位置漂移，可选用稳定化。自由运动和镜头运动不要使用：
 
 ```bash
 python3 "$OIL_MOTION/scripts/motion_pipeline.py" normalize frames frames-stable \
   --anchor bottom --max-scale-change 0.08
 ```
 
-单独检查和打包：
+`alpha-atlas` 单独检查和打包：
 
 ```bash
 python3 "$OIL_MOTION/scripts/motion_pipeline.py" analyze frames \
@@ -362,17 +364,21 @@ python3 "$OIL_MOTION/scripts/compose_travel_frames.py" subject.png \
 
 ## 5. 选择网页资产格式
 
-阅读 [references/runtime.md](references/runtime.md)，再根据访问方式选择：
+阅读 [references/delivery-selection.md](references/delivery-selection.md) 和
+[references/runtime.md](references/runtime.md)，运行 `motion_budget.py` 后直接采用
+`delivery.selected`，不向用户询问格式偏好：
 
-- 透明、短时长、需要任意跳帧：WebP/PNG 图集。
-- 帧数很多、图集超过纹理限制：分片图集。
-- 少量离散状态：多个短视频或多条图集。
+- `alpha-atlas`：随机访问、环形或小型资源，且单张图集满足纹理与解码内存预算。构建时离线抠成 Alpha。
+- `chroma-video`：一维长线性控制、大尺寸，或一维随机访问的 Alpha 图集超预算。保留绿幕视频，由 WebGL 实时抠成 Alpha；随机访问场景必须额外验收 seek 延迟。
+- `2d`：保持离散帧语义，只能走 Alpha 图集；超预算时自动降低采样或拆状态，不能压成线性视频。
+- `discrete`：预算内使用 Alpha 图集；超预算时拆成独立状态或转场并分别预算，不能把无序状态拼成一条视频。
 
-不要因为已经生成了视频就默认 `<video autoplay>`。随机定位和交互响应才决定运行时格式。
+两条路线都是由参数控制整数帧，不使用 `<video autoplay>`。页面背景始终独立，换背景不重新生成主体。
 
 ## 6. 实现交互控制
 
-从 [assets/interactive-motion.ts](assets/interactive-motion.ts) 复制通用运行时，再按项目框架封装。
+从 [assets/interactive-motion.ts](assets/interactive-motion.ts) 复制通用帧控制运行时，再按项目框架封装。若自动选择 `chroma-video`，同时使用
+[assets/chroma-video-renderer.ts](assets/chroma-video-renderer.ts)。
 
 ### 连续控制的默认策略
 
@@ -407,6 +413,7 @@ python3 "$OIL_MOTION/scripts/compose_travel_frames.py" subject.png \
 - 没有多余肢体、瞬时变形、亮度闪烁、重复帧堆积或首尾断层。
 - 已完成目标帧率插帧；原始与插帧接触表均已检查，未出现重影、轮廓撕裂或结构扭曲。
 - 色键完全透明，边缘没有绿色/洋红溢色，细线和半透明细节仍完整。
+- 构建报告包含自动选择结果、选择依据和阈值；实现与 `delivery.selected` 一致，没有要求用户做格式决策。
 - 快速反复移动输入时不粘滞、不抽动、不越界。
 - 低速跟随自然，高速转向受限但不明显落后。
 - 滚动、缩放、设备旋转后输入仍相对正确。
@@ -427,17 +434,19 @@ python3 "$OIL_MOTION/scripts/compose_travel_frames.py" subject.png \
 motion-name/
 ├── source/                 # 参考图和原始视频
 ├── frames/raw/             # 原始切帧
-├── frames/interpolated/    # 强制插帧并抠色后的 Alpha 帧
-├── frames/final/           # 抠图、稳定后的 Alpha 母版帧
-├── matte/                  # Alpha 未嵌入母版时必须提供的独立遮罩
+├── frames/interpolated/    # 图集路线保留的 Alpha 插帧母版
+├── frames/final/           # 图集路线清理后的最终帧
 ├── qa/
 │   ├── analysis.json
 │   └── contact-sheet.jpg
 └── final/
-    ├── motion.webp         # 随机访问图集路线
-    ├── motion-*.webp       # Alpha 图集或分片图集
-    ├── motion.json         # 或 compile.json，保存帧数、尺寸和映射信息
+    ├── motion.webp         # alpha-atlas；与下方视频二选一
+    ├── motion.json         # alpha-atlas 清单
+    ├── motion-chroma-desktop.mp4  # chroma-video；与上方图集二选一
+    ├── motion-chroma-mobile.mp4
+    ├── poster-alpha.png    # chroma-video 静态降级图
+    ├── compile.json        # chroma-video 清单与自动选择证据
     └── implementation.*    # 项目运行时代码
 ```
 
-交付时说明：交互参数模型、最终提示词、源视频、处理命令、关键参数、分析报告、最终资产、页面背景、Alpha/遮罩母版、运行时实现和降级方案。
+每次只交付自动选中的一种主资源，另一种不重复实现。交付时说明：交互参数模型、自动选择结果与依据、最终提示词、色键源、处理命令、关键参数、分析报告、最终资产、页面背景归属、Alpha 生成位置、运行时实现和静态降级方案。

@@ -69,14 +69,14 @@ Once processed, the browser never regenerates video during interaction — it se
 
 ## Asset formats
 
-Different animations need different asset formats. The agent picks based on frame size, transparency, animation length, and control method — you don't need to decide in advance.
+Every animation starts from a chroma-key master while the page owns the final background. The agent chooses the delivery format from frame size, duration, access pattern, and device budget — you don't need to decide.
 
 | Use case | Common format | Why |
 | --- | --- | --- |
-| Transparent characters, short actions, frequent seeking | WebP sprite sheet | All frames live in a few files; suits mouse and drag control |
-| Large product animations, page scroll | Seekable MP4 | High clarity, lower memory than a large sprite sheet |
-| Sprite sheet too large, or limited device performance | Tiled sprite sheets or segmented video | Only loads the part currently needed |
-| Few states like click, hover | Multiple short clips | Each state has a clear boundary; load scope is easy to control |
+| Small, circular, 2D, or frequently-seeked motion | Alpha WebP sprite sheet | Keying happens during the build; random access stays responsive |
+| Large, long, one-dimensional scroll motion | All-keyframe chroma MP4 | WebGL keys it at runtime while video compression avoids a huge RGBA atlas |
+
+The agent runs the budget check and implements only the selected primary route. Both routes keep the page background independent, so changing it never requires regenerating the subject.
 
 Compression follows the actual on-page display size. Larger display areas keep higher resolution; smaller ones drop unnecessary data. When file size and clarity conflict, on-page visual quality wins.
 

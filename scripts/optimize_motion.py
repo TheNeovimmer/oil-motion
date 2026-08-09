@@ -344,7 +344,7 @@ def command_atlas(args: argparse.Namespace) -> None:
             "清晰度阻断：满足实际展示尺寸时，单张图集至少为 "
             f"{required_columns * required_width}×"
             f"{required_rows * required_height} px，超过纹理上限 "
-            f"{args.max_texture}。请改用分片图集、视频或 WebCodecs。"
+            f"{args.max_texture}。请重新运行 motion_budget.py，并执行其自动选择结果。"
         )
 
     with tempfile.TemporaryDirectory(prefix="oil-motion-atlas-") as temp:

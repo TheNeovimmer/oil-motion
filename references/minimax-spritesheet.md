@@ -1,6 +1,6 @@
 # MiniMax 视频转交互雪碧图
 
-本流程用于把参考图片通过 ZenMux 的 MiniMax 视频接口生成连续动作母版，再编译成可随机访问的透明帧、WebP 图集和网页交互。不要把生成视频直接当最终网页资产。
+仅当 `motion_budget.py` 返回 `delivery.selected=alpha-atlas` 时执行本流程。它把参考图片通过 ZenMux 的 MiniMax 视频接口生成连续动作母版，再编译成可随机访问的透明帧、WebP 图集和网页交互。
 
 ## 输入与交付
 
@@ -84,14 +84,17 @@ python3 "$OIL_MOTION/scripts/motion_budget.py" \
   --display 180x180 \
   --dpr 2 \
   --max-texture 4096 \
-  --access random \
+  --driver pointer \
+  --parameter-space circular \
+  --report build/motion-budget.json \
   --strict
 ```
 
 停止条件：
 
+- `delivery.selected` 不是 `alpha-atlas`；此时停止阅读本流程，改走 `chroma-video.md`。
 - 最低单帧像素高于计划的图集单元格。
-- 单张图集超过纹理上限且没有改为分片图集。
+- 单张图集超过纹理或解码内存预算。
 - 静态首帧放到目标页面后存在裁切、模糊、比例或锚点问题。
 
 ### 2. 编写并验收提示词
@@ -232,14 +235,13 @@ python3 "$OIL_MOTION/scripts/motion_budget.py" \
   --dpr 2 \
   --cell 360x360 \
   --max-texture 4096 \
-  --access random \
+  --driver pointer \
+  --parameter-space circular \
+  --report final/motion-budget.json \
   --strict
 ```
 
-预算要求分片时不得通过缩小单帧强塞进一张图集。
-以上数字只是一个能放入 4096 纹理的完整示例；实际项目必须使用 Motion Brief
-中的显示尺寸、DPR 和最终帧数重新计算。若结果推荐分片图集，而当前运行时尚未支持
-分片清单，就停止打包并改用分片图集，不得假装单图集已经交付。
+只有预算仍返回 `alpha-atlas` 且通过时才打包。以上数字只是一个能放入 4096 纹理的完整示例；实际项目必须使用 Motion Brief 中的显示尺寸、DPR、驱动、参数空间和最终帧数重新计算。若自动选择变成 `chroma-video`，停止图集打包并执行视频路线；二维参数超预算时降低采样或拆状态后重新预算，不得降低单帧清晰度或把二维语义压成视频。
 
 ### 8. 网页实现与验收
 
@@ -262,5 +264,5 @@ python3 "$OIL_MOTION/scripts/motion_budget.py" \
 - 最终提示词以及首帧、尾帧、参考图。
 - MiniMax 模型、分辨率、时长、seed 和任务元数据路径。
 - 实际处理命令、原始帧数、清理后帧数和异常报告。
-- 最终图集尺寸、单元格尺寸、解码内存估算和运行时格式。
+- 自动选择结果与依据，以及最终图集尺寸、单元格尺寸和解码内存估算。
 - 网页映射、预加载、阻尼、限速和降级策略。

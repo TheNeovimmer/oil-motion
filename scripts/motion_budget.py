@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""根据最终显示尺寸计算交互动画的像素与图集预算。"""
+"""根据交互方式、显示尺寸和资源预算自动选择网页动画交付方案。"""
 
 from __future__ import annotations
 
@@ -8,6 +8,7 @@ import json
 import math
 import sys
 from dataclasses import asdict, dataclass
+from pathlib import Path
 
 
 def parse_size(value: str) -> tuple[int, int]:
@@ -47,6 +48,76 @@ def check_size(size: tuple[int, int], required: tuple[int, int]) -> SizeCheck:
     )
 
 
+def resolve_access(args: argparse.Namespace) -> str:
+    if args.access != "auto":
+        return args.access
+    if args.parameter_space == "linear" and args.driver in {
+        "scroll",
+        "audio",
+    }:
+        return "sequential"
+    return "random"
+
+
+def select_delivery(
+    args: argparse.Namespace,
+    capacity: int,
+    sheets: int | None,
+    decoded_mib: float,
+    access: str,
+) -> dict[str, object]:
+    atlas_within_budget = (
+        capacity > 0
+        and sheets is not None
+        and sheets == 1
+        and decoded_mib <= args.atlas_max_memory_mib
+    )
+    reason_codes: list[str] = []
+
+    if args.parameter_space == "2d":
+        selected = "alpha-atlas"
+        reason_codes.append("two-dimensional-parameter-needs-discrete-frames")
+        if not atlas_within_budget:
+            reason_codes.append("atlas-needs-budget-optimization")
+    elif args.parameter_space == "discrete":
+        selected = "alpha-atlas"
+        reason_codes.append("discrete-states-need-independent-assets")
+        if not atlas_within_budget:
+            reason_codes.append("states-need-separate-budgets")
+    elif access == "random" and atlas_within_budget:
+        selected = "alpha-atlas"
+        reason_codes.append("random-access-fits-atlas-budget")
+    elif (
+        access == "sequential"
+        and args.parameter_space == "linear"
+        and args.frames >= args.linear_video_min_frames
+    ):
+        selected = "chroma-video"
+        reason_codes.append("long-linear-sequence")
+    elif not atlas_within_budget:
+        selected = "chroma-video"
+        reason_codes.append("atlas-budget-exceeded")
+    else:
+        selected = "alpha-atlas"
+        reason_codes.append("small-asset-fits-atlas-budget")
+
+    return {
+        "selected": selected,
+        "runtime": (
+            "css-alpha-atlas"
+            if selected == "alpha-atlas"
+            else "webgl-chroma-video"
+        ),
+        "reasonCodes": reason_codes,
+        "atlasWithinBudget": atlas_within_budget,
+        "thresholds": {
+            "atlasMaxSheets": 1,
+            "atlasMaxDecodedMemoryMiB": args.atlas_max_memory_mib,
+            "linearVideoMinFrames": args.linear_video_min_frames,
+        },
+    }
+
+
 def build_report(args: argparse.Namespace) -> dict[str, object]:
     display_width, display_height = args.display
     required = (
@@ -61,27 +132,30 @@ def build_report(args: argparse.Namespace) -> dict[str, object]:
     decoded_mib = (
         required_width * required_height * args.frames * 4 / 1024 / 1024
     )
-
-    if capacity == 0:
-        recommendation = "降低显示尺寸，或改用视频 / WebCodecs"
-    elif args.access == "sequential" and (args.frames > 120 or (sheets or 0) > 2):
-        recommendation = "视频解码；需要精确跳帧时使用 WebCodecs"
-    elif sheets == 1:
-        recommendation = "单张图集"
-    elif sheets is not None and sheets <= 8:
-        recommendation = "分片图集"
-    else:
-        recommendation = "视频 / WebCodecs"
+    access = resolve_access(args)
+    delivery = select_delivery(args, capacity, sheets, decoded_mib, access)
 
     failures: list[str] = []
     source_check = check_size(args.source, required) if args.source else None
     cell_check = check_size(args.cell, required) if args.cell else None
     if source_check and not source_check.passes:
         failures.append("源素材低于最终显示所需像素")
-    if cell_check and not cell_check.passes:
+    if (
+        cell_check
+        and delivery["selected"] == "alpha-atlas"
+        and not cell_check.passes
+    ):
         failures.append("图集单帧低于最终显示所需像素")
-    if capacity == 0:
+    if delivery["selected"] == "alpha-atlas" and capacity == 0:
         failures.append("单帧已超过纹理尺寸上限")
+    if (
+        delivery["selected"] == "alpha-atlas"
+        and not delivery["atlasWithinBudget"]
+    ):
+        if args.parameter_space == "discrete":
+            failures.append("离散状态合并后超预算，需要拆成独立状态或转场并分别预算")
+        else:
+            failures.append("Alpha 图集超出单图集或内存预算，需要自动降低采样密度或显示尺寸")
 
     temporal_check = None
     if args.scroll_pages is not None:
@@ -121,8 +195,10 @@ def build_report(args: argparse.Namespace) -> dict[str, object]:
         "sourceCheck": asdict(source_check) if source_check else None,
         "cellCheck": asdict(cell_check) if cell_check else None,
         "temporalCheck": temporal_check,
-        "access": args.access,
-        "recommendation": recommendation,
+        "driver": args.driver,
+        "parameterSpace": args.parameter_space,
+        "access": access,
+        "delivery": delivery,
         "failures": failures,
         "passes": not failures,
     }
@@ -142,6 +218,11 @@ def print_human(report: dict[str, object]) -> None:
         f"{texture['rowsPerSheet']} 帧，共需 {texture['sheetCount']} 片"
     )
     print(f"全部帧解码内存理论值：{report['decodedFrameMemoryMiB']} MiB")
+    delivery = report["delivery"]
+    print(
+        f"自动选择：{delivery['selected']}（{delivery['runtime']}）"
+    )
+    print("选择依据：" + "、".join(delivery["reasonCodes"]))
 
     for label, key in (("源素材", "sourceCheck"), ("当前单帧", "cellCheck")):
         check = report[key]
@@ -161,7 +242,6 @@ def print_human(report: dict[str, object]) -> None:
             f"至少 {temporal['requiredFrames']} 帧）"
         )
 
-    print(f"推荐格式：{report['recommendation']}")
     failures = report["failures"]
     if failures:
         print("阻断项：")
@@ -173,7 +253,7 @@ def print_human(report: dict[str, object]) -> None:
 
 def main() -> int:
     parser = argparse.ArgumentParser(
-        description="根据 CSS 显示尺寸、DPR、帧数和纹理上限检查动画资源预算。"
+        description="根据交互参数、CSS 尺寸、DPR、帧数和纹理预算自动选择 Alpha 图集或绿幕视频。"
     )
     parser.add_argument("--frames", type=int, required=True, help="总帧数")
     parser.add_argument(
@@ -184,10 +264,34 @@ def main() -> int:
         "--max-texture", type=int, default=4096, help="保守纹理边长上限"
     )
     parser.add_argument(
+        "--driver",
+        choices=("pointer", "scroll", "drag", "touch", "orientation", "audio", "data", "state"),
+        default="scroll",
+        help="Motion Brief 中的交互驱动，默认 scroll",
+    )
+    parser.add_argument(
+        "--parameter-space",
+        choices=("linear", "circular", "2d", "discrete"),
+        default="linear",
+        help="Motion Brief 中的参数空间，默认 linear",
+    )
+    parser.add_argument(
         "--access",
-        choices=("random", "sequential"),
-        default="random",
-        help="运行时主要访问方式",
+        choices=("auto", "random", "sequential"),
+        default="auto",
+        help="运行时主要访问方式；默认根据 driver 与 parameter-space 自动推断",
+    )
+    parser.add_argument(
+        "--atlas-max-memory-mib",
+        type=float,
+        default=192.0,
+        help="自动优先选择 Alpha 图集时允许的理论解码内存，默认 192 MiB",
+    )
+    parser.add_argument(
+        "--linear-video-min-frames",
+        type=int,
+        default=180,
+        help="一维顺序动画自动优先视频的帧数门槛，默认 180",
     )
     parser.add_argument("--source", type=parse_size, help="源视频或母版帧尺寸")
     parser.add_argument("--cell", type=parse_size, help="当前图集单帧尺寸")
@@ -203,6 +307,7 @@ def main() -> int:
         help="每屏目标帧数，默认 24",
     )
     parser.add_argument("--json", action="store_true", help="输出 JSON")
+    parser.add_argument("--report", type=Path, help="同时把完整 JSON 报告写入指定路径")
     parser.add_argument(
         "--strict", action="store_true", help="存在阻断项时返回非零退出码"
     )
@@ -214,12 +319,23 @@ def main() -> int:
         parser.error("--dpr 必须大于 0")
     if args.max_texture <= 0:
         parser.error("--max-texture 必须大于 0")
+    if args.atlas_max_memory_mib <= 0:
+        parser.error("--atlas-max-memory-mib 必须大于 0")
+    if args.linear_video_min_frames <= 0:
+        parser.error("--linear-video-min-frames 必须大于 0")
     if args.scroll_pages is not None and args.scroll_pages <= 0:
         parser.error("--scroll-pages 必须大于 0")
     if args.frames_per_page <= 0:
         parser.error("--frames-per-page 必须大于 0")
 
     report = build_report(args)
+    if args.report:
+        report_path = args.report.expanduser().resolve()
+        report_path.parent.mkdir(parents=True, exist_ok=True)
+        report_path.write_text(
+            json.dumps(report, ensure_ascii=False, indent=2),
+            encoding="utf-8",
+        )
     if args.json:
         print(json.dumps(report, ensure_ascii=False, indent=2))
     else:

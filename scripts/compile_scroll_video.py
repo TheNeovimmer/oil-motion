@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
-"""把 MiniMax 动作母版编译为可滚动拖动的全关键帧 MP4。
+"""把绿幕动作母版编译为可精确寻帧的全关键帧 MP4。
 
-适合不需要透明背景、以一维时间轴顺序访问的大尺寸动画。脚本会切帧、裁掉可选的
-尾部停顿、生成质检材料，并输出桌面与移动端两个无音轨版本。
+适合一维连续参数控制的大尺寸动画。脚本强制插帧并保留均匀色键背景，网页使用
+WebGL 实时抠色；最终页面背景不会写进视频。
 """
 
 from __future__ import annotations
@@ -13,12 +13,18 @@ import shutil
 import subprocess
 import sys
 from pathlib import Path
+from statistics import median
 from typing import Any
+
+from PIL import Image
+
+from motion_pipeline import remove_key
 
 
 SCRIPT_DIR = Path(__file__).resolve().parent
 PIPELINE = SCRIPT_DIR / "motion_pipeline.py"
 CLEANUP = SCRIPT_DIR / "loop_cleanup.py"
+OPTIMIZE = SCRIPT_DIR / "optimize_motion.py"
 
 
 def run(command: list[str]) -> None:
@@ -78,6 +84,118 @@ def dimensions_for_width(
 
 def image_frames(directory: Path) -> list[Path]:
     return sorted(directory.glob("frame_*.png"))
+
+
+def representative_frames(paths: list[Path], limit: int = 48) -> list[Path]:
+    if limit < 1:
+        raise ValueError("代表帧数量必须大于 0")
+    if len(paths) <= limit:
+        return paths
+    if limit == 1:
+        return [paths[0]]
+    return [
+        paths[round(index * (len(paths) - 1) / (limit - 1))]
+        for index in range(limit)
+    ]
+
+
+def border_samples(path: Path) -> list[tuple[int, int, int]]:
+    with Image.open(path) as opened:
+        image = opened.convert("RGB")
+    width, height = image.size
+    band = max(1, min(width, height, 6))
+    step = max(1, min(width, height) // 256)
+    pixels = image.load()
+    samples: list[tuple[int, int, int]] = []
+    for x in range(0, width, step):
+        for offset in range(band):
+            samples.append(pixels[x, offset])
+            samples.append(pixels[x, height - 1 - offset])
+    for y in range(0, height, step):
+        for offset in range(band):
+            samples.append(pixels[offset, y])
+            samples.append(pixels[width - 1 - offset, y])
+    return samples
+
+
+def sample_key_color(path: Path) -> tuple[int, int, int]:
+    samples = border_samples(path)
+    return tuple(
+        int(round(median(sample[channel] for sample in samples)))
+        for channel in range(3)
+    )
+
+
+def key_color_hex(key: tuple[int, int, int]) -> str:
+    return f"#{key[0]:02X}{key[1]:02X}{key[2]:02X}"
+
+
+def validate_key_source(
+    paths: list[Path],
+    key: tuple[int, int, int],
+) -> dict[str, object]:
+    red, green, blue = key
+    if green >= red + 40 and green >= blue + 40:
+        kind = "green"
+    elif red >= green + 40 and blue >= green + 40:
+        kind = "magenta"
+    else:
+        raise ValueError("母版边缘不是可识别的绿色或洋红色键背景")
+    checked = representative_frames(paths)
+    worst_spread = 0
+    for path in checked:
+        spreads = sorted(
+            max(abs(color[channel] - key[channel]) for channel in range(3))
+            for color in border_samples(path)
+        )
+        spread_p95 = spreads[round((len(spreads) - 1) * 0.95)]
+        worst_spread = max(worst_spread, spread_p95)
+        if spread_p95 > 32:
+            raise ValueError(
+                f"母版色键边缘不均匀：{path.name} 的 95% 色差范围为 "
+                f"{spread_p95}，上限 32"
+            )
+    return {
+        "kind": kind,
+        "borderSpreadP95Max": worst_spread,
+        "checkedFrames": len(checked),
+    }
+
+
+def prepare_alpha_qa_frames(
+    source_frames: list[Path],
+    output: Path,
+    key: tuple[int, int, int],
+) -> None:
+    output.mkdir(parents=True, exist_ok=True)
+    for index, frame in enumerate(source_frames, start=1):
+        remove_key(
+            frame,
+            output / f"frame_{index:05d}.png",
+            key,
+            transparent_threshold=12,
+            opaque_threshold=220,
+        )
+
+
+def load_budget_report(path: Path) -> dict[str, Any]:
+    if not path.is_file():
+        raise FileNotFoundError(f"找不到预算报告：{path}")
+    report = json.loads(path.read_text(encoding="utf-8"))
+    delivery = report.get("delivery", {})
+    if delivery.get("selected") != "chroma-video":
+        raise ValueError("预算报告没有选择 chroma-video，禁止执行视频编译路线")
+    if not report.get("passes"):
+        raise ValueError("预算报告存在阻断项，禁止执行视频编译路线")
+    return report
+
+
+def require_interpolation_pass(path: Path) -> dict[str, Any]:
+    report = json.loads(path.read_text(encoding="utf-8"))
+    verdict = report.get("verdict", {})
+    if not verdict.get("passedAutomaticChecks"):
+        raise RuntimeError("插帧自动检查未通过，禁止继续编码视频")
+    return report
 
 
 def encode_all_intra(
@@ -173,8 +291,10 @@ def compile_motion(args: argparse.Namespace) -> int:
 
     source = Path(args.source).expanduser().resolve()
     output = Path(args.output_dir).expanduser().resolve()
+    budget_path = Path(args.budget_report).expanduser().resolve()
     if not source.is_file():
         raise FileNotFoundError(f"找不到视频：{source}")
+    budget_report = load_budget_report(budget_path)
     if args.loop and args.end_reference:
         raise ValueError("--loop 与 --end-reference 不能同时使用")
     if args.fps <= 0:
@@ -196,24 +316,31 @@ def compile_motion(args: argparse.Namespace) -> int:
     source_width = int(source_video["width"])
     source_height = int(source_video["height"])
 
-    raw_frames = output / "frames" / "raw"
-    final_frames = output / "frames" / "final"
+    interpolation = output / "interpolation"
+    raw_frames = interpolation / "frames"
+    cleaned_frames = output / "frames" / "final"
+    alpha_qa_frames = output / "frames" / "alpha-qa"
     qa = output / "qa"
     final = output / "final"
     qa.mkdir(parents=True, exist_ok=True)
+    final.mkdir(parents=True, exist_ok=True)
 
     run(
         [
             sys.executable,
-            str(PIPELINE),
-            "extract",
+            str(OPTIMIZE),
+            "interpolate",
             str(source),
-            str(raw_frames),
+            str(interpolation),
             "--fps",
             str(args.fps),
             "--key",
             "none",
         ]
+    )
+    interpolation_report_path = interpolation / "interpolation-report.json"
+    interpolation_report = require_interpolation_pass(
+        interpolation_report_path
     )
     raw_count = len(image_frames(raw_frames))
     if raw_count < 3:
@@ -224,7 +351,7 @@ def compile_motion(args: argparse.Namespace) -> int:
             sys.executable,
             str(CLEANUP),
             str(raw_frames),
-            str(final_frames),
+            str(cleaned_frames),
             "--seam-window",
             str(args.seam_window),
             "--duplicate-threshold",
@@ -240,19 +367,30 @@ def compile_motion(args: argparse.Namespace) -> int:
                 ]
             )
         run(cleanup_command)
+        final_frames = cleaned_frames
     else:
-        final_frames.mkdir(parents=True, exist_ok=True)
-        for frame in image_frames(raw_frames):
-            shutil.copy2(frame, final_frames / frame.name)
-        print("提示：未传 --loop 或 --end-reference，保留全部母版帧", flush=True)
+        final_frames = raw_frames
+        print("提示：未传 --loop 或 --end-reference，使用全部插帧", flush=True)
 
-    final_count = len(image_frames(final_frames))
+    final_frame_paths = image_frames(final_frames)
+    if not final_frame_paths:
+        raise RuntimeError("清理后没有可编码帧")
+    final_count = len(final_frame_paths)
+    detected_key = sample_key_color(final_frame_paths[0])
+    detected_key_color = key_color_hex(detected_key)
+    key_validation = validate_key_source(final_frame_paths, detected_key)
+    alpha_qa_sources = representative_frames(final_frame_paths)
+    prepare_alpha_qa_frames(alpha_qa_sources, alpha_qa_frames, detected_key)
+    shutil.copy2(
+        image_frames(alpha_qa_frames)[0],
+        final / "poster-alpha.png",
+    )
     run(
         [
             sys.executable,
             str(PIPELINE),
             "analyze",
-            str(final_frames),
+            str(alpha_qa_frames),
             "--output",
             str(qa / "analysis.json"),
         ]
@@ -262,13 +400,14 @@ def compile_motion(args: argparse.Namespace) -> int:
             sys.executable,
             str(PIPELINE),
             "contact",
-            str(final_frames),
+            str(alpha_qa_frames),
             "--output",
             str(qa / "contact-sheet.jpg"),
             "--columns",
             str(args.contact_columns),
         ]
     )
+    shutil.rmtree(alpha_qa_frames)
 
     desktop_size = dimensions_for_width(
         args.desktop_width,
@@ -282,8 +421,8 @@ def compile_motion(args: argparse.Namespace) -> int:
         source_height,
         args.allow_upscale,
     )
-    desktop_output = final / "motion-scrub-desktop.mp4"
-    mobile_output = final / "motion-scrub-mobile.mp4"
+    desktop_output = final / "motion-chroma-desktop.mp4"
+    mobile_output = final / "motion-chroma-mobile.mp4"
     encode_all_intra(
         final_frames,
         desktop_output,
@@ -311,9 +450,13 @@ def compile_motion(args: argparse.Namespace) -> int:
             "probe": source_probe,
         },
         "compile": {
+            "backgroundOwner": "page",
+            "detectedKeyColor": detected_key_color,
+            "keyValidation": key_validation,
             "fps": args.fps,
             "rawFrameCount": raw_count,
             "finalFrameCount": final_count,
+            "alphaQaFrameCount": len(alpha_qa_sources),
             "duration": final_count / args.fps,
             "cleanup": (
                 "loop"
@@ -324,8 +467,17 @@ def compile_motion(args: argparse.Namespace) -> int:
             ),
             "duplicateThreshold": args.duplicate_threshold,
             "seamWindow": args.seam_window,
+            "interpolationReport": str(interpolation_report_path),
+            "interpolationVerdict": interpolation_report["verdict"],
+            "budgetReport": str(budget_path),
+            "selection": budget_report["delivery"],
+            "intermediateFramesRetained": args.keep_frames,
         },
         "outputs": {
+            "poster": {
+                "path": str(final / "poster-alpha.png"),
+                "alpha": True,
+            },
             "desktop": {
                 "path": str(desktop_output),
                 "width": desktop_size[0],
@@ -349,20 +501,32 @@ def compile_motion(args: argparse.Namespace) -> int:
         json.dumps(manifest, ensure_ascii=False, indent=2),
         encoding="utf-8",
     )
+    if not args.keep_frames:
+        for directory in (raw_frames, cleaned_frames):
+            if directory.is_dir():
+                shutil.rmtree(directory)
+        frames_root = output / "frames"
+        if frames_root.is_dir() and not any(frames_root.iterdir()):
+            frames_root.rmdir()
     print(f"编译完成：{manifest_path}", flush=True)
     return 0
 
 
 def parser() -> argparse.ArgumentParser:
     result = argparse.ArgumentParser(
-        description="把 MiniMax 母版编译为桌面与移动端全关键帧滚动视频"
+        description="把绿幕动作母版插帧并编译为桌面与移动端全关键帧视频，供 WebGL 实时抠色"
     )
-    result.add_argument("source", help="MiniMax 生成的动作母版 MP4")
+    result.add_argument("source", help="MiniMax 生成的均匀绿幕动作母版 MP4")
     result.add_argument("output_dir", help="新的构建目录")
+    result.add_argument(
+        "--budget-report",
+        required=True,
+        help="motion_budget.py 生成且已选择 chroma-video 的 JSON 报告",
+    )
     mode = result.add_mutually_exclusive_group()
     mode.add_argument("--loop", action="store_true", help="按闭环首帧裁掉尾部停顿")
     mode.add_argument("--end-reference", help="单向转场目标尾帧，用于裁掉尾部停顿")
-    result.add_argument("--fps", type=float, default=24)
+    result.add_argument("--fps", type=float, default=48)
     result.add_argument(
         "--desktop-width",
         type=int,
@@ -375,8 +539,8 @@ def parser() -> argparse.ArgumentParser:
         default=1280,
         help="移动端资源像素宽度，通常为最大 CSS 宽度 × DPR；默认 1280",
     )
-    result.add_argument("--desktop-crf", type=int, default=18)
-    result.add_argument("--mobile-crf", type=int, default=19)
+    result.add_argument("--desktop-crf", type=int, default=12)
+    result.add_argument("--mobile-crf", type=int, default=14)
     result.add_argument("--seam-window", type=int, default=40)
     result.add_argument("--duplicate-threshold", type=float, default=0.003)
     result.add_argument("--contact-columns", type=int, default=8)
@@ -384,6 +548,11 @@ def parser() -> argparse.ArgumentParser:
         "--allow-upscale",
         action="store_true",
         help="允许输出宽度超过母版；默认自动限制为母版宽度",
+    )
+    result.add_argument(
+        "--keep-frames",
+        action="store_true",
+        help="保留插帧和清理帧用于调试；默认成功后删除中间 PNG",
     )
     result.add_argument("--force", action="store_true")
     return result
