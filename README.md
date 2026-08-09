@@ -2,6 +2,8 @@
   <img src="./assets/readme/hero.svg" width="100%" alt="Oil Motion 把 AI 生成的连续动作接入网页交互">
 </p>
 
+**English**: [README.en.md](./README.en.md) · **中文**: README.md
+
 Oil Motion 是一个 Agent 通用的交互动画 Skill。它负责设计动作、生成连续画面、整理动画资源，并把最终效果接入页面滚动、鼠标、拖动、触摸或设备方向。
 
 使用时只需要说明希望表达什么、提供哪些素材，以及动画应该跟随什么操作。具体的生成、检查、压缩和前端实现由 Agent 完成。
