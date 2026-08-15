@@ -53,6 +53,8 @@ python3 scripts/motion_budget.py \
 - 视频尺寸至少覆盖最大实际 CSS 尺寸乘目标 DPR，同时不得超过母版分辨率。
 - 页面背景、文字和其他视觉层位于 Canvas 外部；视频编码不得包含它们。
 - WebGL 或视频失败时回退静态 Alpha 首帧，不得显示原始绿幕。
+- 运行时从 `compile.json.runtime` 读取帧数、帧率、语义锚点和完整 `keying` 参数；不得在页面中维护第二份常量。
+- `chroma-video-renderer.ts` 的 `dominance-v2` 必须与编译器编码后 QA 同步更新。只改 Shader 或只改 Python 都视为契约破坏。
 
 完整编译和验收规则见 [chroma-video.md](chroma-video.md)。
 

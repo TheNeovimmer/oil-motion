@@ -1,8 +1,22 @@
+export type ChromaKeyingParameters = {
+  algorithm: "dominance-v2";
+  mode: "green" | "magenta";
+  keyColor: [number, number, number];
+  similarity: number;
+  smoothness: number;
+  dominanceStart: number;
+  dominanceEnd: number;
+  spillStart: number;
+  spillEnd: number;
+  spill: number;
+};
+
 export type ChromaVideoRendererOptions = {
   video: HTMLVideoElement;
   canvas: HTMLCanvasElement;
   frameCount: number;
   fps: number;
+  keying?: ChromaKeyingParameters;
   keyColor?: [number, number, number];
   similarity?: number;
   smoothness?: number;
@@ -37,6 +51,11 @@ uniform sampler2D uTexture;
 uniform vec3 uKeyColor;
 uniform float uSimilarity;
 uniform float uSmoothness;
+uniform float uKeyMode;
+uniform float uDominanceStart;
+uniform float uDominanceEnd;
+uniform float uSpillStart;
+uniform float uSpillEnd;
 uniform float uSpill;
 
 vec2 chroma(vec3 color) {
@@ -47,20 +66,33 @@ vec2 chroma(vec3 color) {
 void main() {
   vec4 sampleColor = texture2D(uTexture, vTextureCoordinate);
   float distanceFromKey = distance(chroma(sampleColor.rgb), chroma(uKeyColor));
-  float alpha = smoothstep(
+  float distanceAlpha = smoothstep(
     uSimilarity,
     uSimilarity + max(0.0001, uSmoothness),
     distanceFromKey
   );
 
   vec3 color = sampleColor.rgb;
-  float edge = (1.0 - alpha) * uSpill;
-  if (uKeyColor.g >= uKeyColor.r && uKeyColor.g >= uKeyColor.b) {
-    color.g = mix(color.g, min(color.g, max(color.r, color.b)), edge);
-  } else if (uKeyColor.r >= uKeyColor.g && uKeyColor.r >= uKeyColor.b) {
-    color.r = mix(color.r, min(color.r, max(color.g, color.b)), edge);
+  float greenDominance = color.g - max(color.r, color.b);
+  float magentaDominance = min(color.r, color.b) - color.g;
+  float keyDominance = mix(greenDominance, magentaDominance, uKeyMode);
+  float dominanceMask = smoothstep(
+    uDominanceStart,
+    uDominanceEnd,
+    keyDominance
+  );
+  float alpha = min(distanceAlpha, 1.0 - dominanceMask);
+  float dominanceSpill = smoothstep(uSpillStart, uSpillEnd, keyDominance);
+  float spillMask = clamp(
+    max(dominanceSpill, (1.0 - alpha) * uSpill),
+    0.0,
+    1.0
+  );
+  if (uKeyMode < 0.5) {
+    color.g = mix(color.g, max(color.r, color.b), spillMask);
   } else {
-    color.b = mix(color.b, min(color.b, max(color.r, color.g)), edge);
+    color.r = mix(color.r, color.g, spillMask);
+    color.b = mix(color.b, color.g, spillMask);
   }
 
   gl_FragColor = vec4(color * alpha, alpha);
@@ -119,10 +151,26 @@ export function createChromaVideoRenderer(
   const { video, canvas } = options;
   const frameCount = Math.max(1, Math.floor(options.frameCount));
   const fps = Math.max(1, options.fps);
-  const keyColor = options.keyColor ?? [0, 255, 0];
-  const similarity = options.similarity ?? 0.1;
-  const smoothness = options.smoothness ?? 0.08;
-  const spill = options.spill ?? 1;
+  const legacyKeyColor = options.keyColor ?? [0, 255, 0];
+  const keying: ChromaKeyingParameters = options.keying ?? {
+    algorithm: "dominance-v2",
+    mode:
+      legacyKeyColor[0] >= legacyKeyColor[1] + 40 &&
+      legacyKeyColor[2] >= legacyKeyColor[1] + 40
+        ? "magenta"
+        : "green",
+    keyColor: legacyKeyColor,
+    similarity: options.similarity ?? 0.12,
+    smoothness: options.smoothness ?? 0.06,
+    dominanceStart: 0,
+    dominanceEnd: 0.12,
+    spillStart: -0.005,
+    spillEnd: 0.06,
+    spill: options.spill ?? 1,
+  };
+  if (keying.algorithm !== "dominance-v2") {
+    throw new Error(`不支持的色键算法：${keying.algorithm}`);
+  }
   const maxDpr = options.maxDpr ?? 2;
   const gl = canvas.getContext("webgl", {
     alpha: true,
@@ -154,6 +202,26 @@ export function createChromaVideoRenderer(
   const smoothnessLocation = requiredLocation(
     gl.getUniformLocation(program, "uSmoothness"),
     "uSmoothness",
+  );
+  const keyModeLocation = requiredLocation(
+    gl.getUniformLocation(program, "uKeyMode"),
+    "uKeyMode",
+  );
+  const dominanceStartLocation = requiredLocation(
+    gl.getUniformLocation(program, "uDominanceStart"),
+    "uDominanceStart",
+  );
+  const dominanceEndLocation = requiredLocation(
+    gl.getUniformLocation(program, "uDominanceEnd"),
+    "uDominanceEnd",
+  );
+  const spillStartLocation = requiredLocation(
+    gl.getUniformLocation(program, "uSpillStart"),
+    "uSpillStart",
+  );
+  const spillEndLocation = requiredLocation(
+    gl.getUniformLocation(program, "uSpillEnd"),
+    "uSpillEnd",
   );
   const spillLocation = requiredLocation(
     gl.getUniformLocation(program, "uSpill"),
@@ -209,6 +277,8 @@ export function createChromaVideoRenderer(
   const draw = () => {
     if (destroyed || video.readyState < video.HAVE_CURRENT_DATA) return;
     resize();
+    gl.clearColor(0, 0, 0, 0);
+    gl.clear(gl.COLOR_BUFFER_BIT);
     gl.useProgram(program);
     gl.bindBuffer(gl.ARRAY_BUFFER, buffer);
     gl.enableVertexAttribArray(positionLocation);
@@ -225,13 +295,18 @@ export function createChromaVideoRenderer(
     updateCoverTransform();
     gl.uniform3f(
       keyColorLocation,
-      keyColor[0] / 255,
-      keyColor[1] / 255,
-      keyColor[2] / 255,
+      keying.keyColor[0] / 255,
+      keying.keyColor[1] / 255,
+      keying.keyColor[2] / 255,
     );
-    gl.uniform1f(similarityLocation, similarity);
-    gl.uniform1f(smoothnessLocation, smoothness);
-    gl.uniform1f(spillLocation, spill);
+    gl.uniform1f(similarityLocation, keying.similarity);
+    gl.uniform1f(smoothnessLocation, keying.smoothness);
+    gl.uniform1f(keyModeLocation, keying.mode === "magenta" ? 1 : 0);
+    gl.uniform1f(dominanceStartLocation, keying.dominanceStart);
+    gl.uniform1f(dominanceEndLocation, keying.dominanceEnd);
+    gl.uniform1f(spillStartLocation, keying.spillStart);
+    gl.uniform1f(spillEndLocation, keying.spillEnd);
+    gl.uniform1f(spillLocation, keying.spill);
     gl.drawArrays(gl.TRIANGLES, 0, 6);
   };
 

@@ -21,6 +21,8 @@ COMPILE = importlib.util.module_from_spec(SPEC)
 sys.modules[SPEC.name] = COMPILE
 SPEC.loader.exec_module(COMPILE)
 
+from chroma_key import analyze_frame, default_parameters, key_image
+
 
 class ChromaVideoCompileTests(unittest.TestCase):
     def test_representative_frames_include_both_ends(self) -> None:
@@ -31,6 +33,13 @@ class ChromaVideoCompileTests(unittest.TestCase):
         self.assertEqual(len(sampled), 48)
         self.assertEqual(sampled[0], paths[0])
         self.assertEqual(sampled[-1], paths[-1])
+
+    def test_representative_indices_include_both_ends(self) -> None:
+        sampled = COMPILE.representative_indices(323)
+
+        self.assertEqual(len(sampled), 48)
+        self.assertEqual(sampled[0], 0)
+        self.assertEqual(sampled[-1], 322)
 
     def test_uniform_green_frames_pass_key_validation(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
@@ -54,6 +63,67 @@ class ChromaVideoCompileTests(unittest.TestCase):
 
             with self.assertRaisesRegex(ValueError, "绿色或洋红色键背景"):
                 COMPILE.validate_key_source([path], (255, 255, 255))
+
+    def test_dark_green_region_and_green_edge_are_removed(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            source = Path(directory) / "source.png"
+            output = Path(directory) / "output.png"
+            image = Image.new("RGB", (64, 64), (0, 235, 10))
+            image.paste((18, 82, 24), (8, 8, 56, 56))
+            image.paste((220, 40, 30), (24, 24, 40, 40))
+            image.save(source)
+            parameters = default_parameters((0, 235, 10))
+
+            key_image(source, output, parameters)
+
+            with Image.open(output) as result:
+                alpha = result.getchannel("A")
+                self.assertLessEqual(alpha.getpixel((12, 12)), 2)
+                self.assertGreaterEqual(alpha.getpixel((32, 32)), 250)
+            metrics = analyze_frame(source, parameters)
+            self.assertLessEqual(metrics["keyLikeAlphaP99"], 0.01)
+
+    def test_magenta_key_mode_removes_magenta_background(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            source = Path(directory) / "source.png"
+            output = Path(directory) / "output.png"
+            image = Image.new("RGB", (32, 32), (240, 0, 235))
+            image.paste((30, 180, 220), (8, 8, 24, 24))
+            image.save(source)
+            parameters = default_parameters((240, 0, 235))
+
+            key_image(source, output, parameters)
+
+            self.assertEqual(parameters.mode, "magenta")
+            with Image.open(output) as result:
+                alpha = result.getchannel("A")
+                self.assertLessEqual(alpha.getpixel((2, 2)), 2)
+                self.assertGreaterEqual(alpha.getpixel((16, 16)), 250)
+
+    def test_source_anchor_maps_to_nearest_retained_frame(self) -> None:
+        kept = [0, 1, 4, 9, 20, 48, 90, 248, 251]
+
+        self.assertEqual(COMPILE.map_source_frame(248, kept), 7)
+        self.assertEqual(COMPILE.map_source_frame(47, kept), 5)
+
+    def test_anchor_parser_rejects_duplicates(self) -> None:
+        with self.assertRaisesRegex(ValueError, "重复"):
+            COMPILE.parse_anchors(["center=20", "center=21"])
+
+    def test_runtime_shader_implements_manifest_contract(self) -> None:
+        shader = (
+            SCRIPT_DIR.parent / "assets" / "chroma-video-renderer.ts"
+        ).read_text(encoding="utf-8")
+
+        for token in (
+            'algorithm: "dominance-v2"',
+            "uDominanceStart",
+            "uDominanceEnd",
+            "uSpillStart",
+            "uSpillEnd",
+            "keying.keyColor",
+        ):
+            self.assertIn(token, shader)
 
     def test_video_compiler_rejects_atlas_budget_report(self) -> None:
         with tempfile.TemporaryDirectory() as directory:

@@ -24,6 +24,7 @@
 
 ## 抠图结果
 
+- 视频路线只验收最终 H.264 MP4 解码出的帧，编码前 PNG 只能用于上游诊断。
 - 图像模式为 RGBA。
 - 四角 alpha 为 0。
 - 头发、眼镜、线稿、耳朵、尾巴和细小道具完整。
@@ -32,6 +33,19 @@
 - 相邻帧 alpha 边缘没有明显跳动。
 
 若背景本身不均匀，重新生成母版通常比扩大抠色阈值更安全。
+
+### 视频路线硬门槛
+
+`compile_scroll_video.py` 会用 `compile.json.runtime.keying` 对桌面和移动成片重新抽帧抠色，
+并写入 `qa/post-encode-keying.json`。以下任一项超限都停止交付：
+
+- `keyLikeAlphaP99`：色键样本的 99% Alpha，拦截整块半透明绿幕。
+- `visibleKeyPixelRatio`：仍可见的色键优势像素比例。
+- `opaqueKeyPixelRatio`：仍接近不透明的色键优势像素比例。
+- `edgeKeyDominanceP95`：半透明边缘去溢色后的残留通道优势。
+
+还必须查看白、黑、粉、蓝背景矩阵。Canvas 阴影、滤镜和混合模式只能在抠像完成后作用于
+独立合成层，不能直接放大原始视频边缘残色。
 
 ## 分析报告
 

@@ -19,17 +19,23 @@ python3 scripts/compile_scroll_video.py \
   --budget-report build/motion-budget.json \
   --fps 48 \
   --desktop-width 1920 \
-  --mobile-width 1280
+  --mobile-width 1280 \
+  --anchor center=240 \
+  --poster-source-frame 240
 ```
+
+`--anchor` 和 `--poster-source-frame` 使用清理前插帧序列的零基索引。编译器会根据
+`keptSourceIndices` 映射到最终序列，避免去重或裁尾后中心状态漂移。
 
 脚本会：
 
 1. 强制插帧到 48 FPS，保留绿幕，不在媒体中写入页面背景。
 2. 输出原始与插帧接触表和插帧报告。
 3. 按需清理闭环接缝或尾部停顿。
-4. 均匀抽取最多 48 帧做 Alpha 边缘分析，并从整段代表帧检查实际色键颜色与均匀度。
-5. 编码桌面端和移动端全关键帧 MP4，移除音轨。
-6. 生成静态 Alpha 降级图和 `compile.json`，记录帧数、色键、自动选择依据、尺寸、全关键帧检查和输出路径。
+4. 从整段代表帧检查源色键颜色与边缘均匀度。
+5. 编码桌面端和移动端全关键帧 MP4，移除音轨，并把全关键帧检查作为硬门槛。
+6. 从最终 MP4 各抽取最多 48 个代表帧，用与 WebGL 完全相同的 `dominance-v2` 参数重新抠色；检查绿色/洋红残留、半透明大块和边缘去溢色。
+7. 生成编码后 Alpha 接触表、白/黑/高饱和背景矩阵、静态 Alpha 降级图和 `compile.json`。任一自动门槛失败时保留诊断帧并停止交付。
 
 成功后默认删除可重新生成的中间 PNG，保留绿幕母版、接触表、分析报告、静态 Alpha 图和最终视频。只有定位插帧或编码问题时才传 `--keep-frames`。
 
@@ -41,6 +47,20 @@ python3 scripts/compile_scroll_video.py \
 
 - `assets/interactive-motion.ts`：把滚动、拖拽等输入映射为整数目标帧，并处理阻尼与限速。
 - `assets/chroma-video-renderer.ts`：把整数帧换算成 `video.currentTime`，等待 seek 完成后由 WebGL 色键着色器绘制到透明 Canvas。
+
+页面必须读取 `compile.json.runtime`，把其中的 `frameCount`、`fps`、`anchors` 和
+`keying` 原样交给运行时。不要在业务代码中复制色键颜色、阈值或中心帧：
+
+```ts
+const runtime = manifest.runtime;
+const renderer = createChromaVideoRenderer({
+  video,
+  canvas,
+  frameCount: runtime.frameCount,
+  fps: runtime.fps,
+  keying: runtime.keying,
+});
+```
 
 页面结构保持简单：
 
@@ -69,6 +89,8 @@ python3 scripts/compile_scroll_video.py \
 
 ## 验收
 
+- `qa/post-encode-keying.json` 的总结果、桌面端和移动端结果都必须为 `passed: true`。
+- 查看 `desktop/mobile-alpha-contact.jpg` 与 `desktop/mobile-background-matrix.jpg`；自动报告不能替代视觉检查。
 - 在白、黑和高饱和背景上检查边缘，确认没有绿边、洋红边和主体内部误删。
 - 检查慢速滚动、快速滚动、连续反向、首帧、尾帧和跨章节跳转。
 - `compile.json` 中桌面与移动输出的 `allFramesAreKeyframes` 必须为 `true`。

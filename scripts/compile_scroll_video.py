@@ -16,15 +16,28 @@ from pathlib import Path
 from statistics import median
 from typing import Any
 
-from PIL import Image
+from PIL import Image, ImageDraw
 
-from motion_pipeline import remove_key
+from chroma_key import (
+    ChromaKeyParameters,
+    analyze_frame,
+    default_parameters,
+    key_image,
+    key_mode,
+)
 
 
 SCRIPT_DIR = Path(__file__).resolve().parent
 PIPELINE = SCRIPT_DIR / "motion_pipeline.py"
 CLEANUP = SCRIPT_DIR / "loop_cleanup.py"
 OPTIMIZE = SCRIPT_DIR / "optimize_motion.py"
+
+POST_ENCODE_LIMITS = {
+    "keyLikeAlphaP99": 0.01,
+    "visibleKeyPixelRatio": 0.01,
+    "opaqueKeyPixelRatio": 0.005,
+    "edgeKeyDominanceP95": 0.02,
+}
 
 
 def run(command: list[str]) -> None:
@@ -99,6 +112,21 @@ def representative_frames(paths: list[Path], limit: int = 48) -> list[Path]:
     ]
 
 
+def representative_indices(count: int, limit: int = 48) -> list[int]:
+    if count < 1:
+        raise ValueError("帧数必须大于 0")
+    if limit < 1:
+        raise ValueError("代表帧数量必须大于 0")
+    if count <= limit:
+        return list(range(count))
+    if limit == 1:
+        return [0]
+    return [
+        round(index * (count - 1) / (limit - 1))
+        for index in range(limit)
+    ]
+
+
 def border_samples(path: Path) -> list[tuple[int, int, int]]:
     with Image.open(path) as opened:
         image = opened.convert("RGB")
@@ -126,6 +154,16 @@ def sample_key_color(path: Path) -> tuple[int, int, int]:
     )
 
 
+def sample_key_color_many(paths: list[Path]) -> tuple[int, int, int]:
+    if not paths:
+        raise ValueError("没有可用于采样色键的帧")
+    per_frame = [sample_key_color(path) for path in paths]
+    return tuple(
+        int(round(median(color[channel] for color in per_frame)))
+        for channel in range(3)
+    )
+
+
 def key_color_hex(key: tuple[int, int, int]) -> str:
     return f"#{key[0]:02X}{key[1]:02X}{key[2]:02X}"
 
@@ -134,13 +172,10 @@ def validate_key_source(
     paths: list[Path],
     key: tuple[int, int, int],
 ) -> dict[str, object]:
-    red, green, blue = key
-    if green >= red + 40 and green >= blue + 40:
-        kind = "green"
-    elif red >= green + 40 and blue >= green + 40:
-        kind = "magenta"
-    else:
-        raise ValueError("母版边缘不是可识别的绿色或洋红色键背景")
+    try:
+        kind = key_mode(key)
+    except ValueError as error:
+        raise ValueError("母版边缘不是可识别的绿色或洋红色键背景") from error
     checked = representative_frames(paths)
     worst_spread = 0
     for path in checked:
@@ -162,20 +197,169 @@ def validate_key_source(
     }
 
 
-def prepare_alpha_qa_frames(
-    source_frames: list[Path],
+def decode_video_frames(
+    video: Path,
     output: Path,
-    key: tuple[int, int, int],
-) -> None:
+    indices: list[int],
+) -> dict[int, Path]:
+    if not indices:
+        raise ValueError("至少需要解码一帧")
     output.mkdir(parents=True, exist_ok=True)
-    for index, frame in enumerate(source_frames, start=1):
-        remove_key(
-            frame,
-            output / f"frame_{index:05d}.png",
-            key,
-            transparent_threshold=12,
-            opaque_threshold=220,
+    expression = "+".join(f"eq(n\\,{index})" for index in indices)
+    run(
+        [
+            "ffmpeg",
+            "-hide_banner",
+            "-loglevel",
+            "warning",
+            "-y",
+            "-i",
+            str(video),
+            "-vf",
+            f"select={expression}",
+            "-fps_mode",
+            "vfr",
+            str(output / "frame_%05d.png"),
+        ]
+    )
+    decoded = image_frames(output)
+    if len(decoded) != len(indices):
+        raise RuntimeError(
+            f"编码后抽帧数量错误：期望 {len(indices)}，实际 {len(decoded)}"
         )
+    return dict(zip(indices, decoded, strict=True))
+
+
+def parse_anchors(values: list[str]) -> dict[str, int]:
+    anchors: dict[str, int] = {}
+    for value in values:
+        if "=" not in value:
+            raise ValueError("--anchor 格式必须是 NAME=SOURCE_FRAME")
+        name, raw_frame = value.split("=", 1)
+        name = name.strip()
+        if not name or not name.replace("-", "_").isidentifier():
+            raise ValueError(f"无效锚点名称：{name or value}")
+        if name in anchors:
+            raise ValueError(f"锚点名称重复：{name}")
+        try:
+            source_frame = int(raw_frame)
+        except ValueError as error:
+            raise ValueError(f"锚点帧必须是整数：{value}") from error
+        if source_frame < 0:
+            raise ValueError(f"锚点帧不能小于 0：{value}")
+        anchors[name] = source_frame
+    return anchors
+
+
+def map_source_frame(source_frame: int, kept_source_indices: list[int]) -> int:
+    if not kept_source_indices:
+        raise ValueError("清理报告没有保留帧")
+    return min(
+        range(len(kept_source_indices)),
+        key=lambda index: (abs(kept_source_indices[index] - source_frame), index),
+    )
+
+
+def create_background_matrix(alpha_frames: list[Path], output: Path) -> None:
+    selected = representative_frames(alpha_frames, limit=6)
+    if not selected:
+        raise ValueError("没有可生成背景验收矩阵的 Alpha 帧")
+    thumb_width = 160
+    with Image.open(selected[0]) as opened:
+        thumb_height = max(1, round(thumb_width * opened.height / opened.width))
+    backgrounds = [
+        (255, 255, 255),
+        (8, 8, 10),
+        (245, 24, 88),
+        (0, 112, 255),
+    ]
+    gutter = 8
+    label_height = 18
+    width = gutter + len(selected) * (thumb_width + gutter)
+    height = gutter + len(backgrounds) * (thumb_height + label_height + gutter)
+    sheet = Image.new("RGB", (width, height), (32, 32, 34))
+    draw = ImageDraw.Draw(sheet)
+    for row, background_color in enumerate(backgrounds):
+        y = gutter + row * (thumb_height + label_height + gutter)
+        draw.text((gutter, y + thumb_height + 2), f"BG {row + 1}", fill=(230, 230, 230))
+        for column, path in enumerate(selected):
+            with Image.open(path) as opened:
+                foreground = opened.convert("RGBA")
+            foreground.thumbnail(
+                (thumb_width, thumb_height),
+                Image.Resampling.LANCZOS,
+            )
+            background = Image.new(
+                "RGBA",
+                (thumb_width, thumb_height),
+                (*background_color, 255),
+            )
+            x = gutter + column * (thumb_width + gutter)
+            paste_x = (thumb_width - foreground.width) // 2
+            paste_y = (thumb_height - foreground.height) // 2
+            background.alpha_composite(foreground, (paste_x, paste_y))
+            sheet.paste(background.convert("RGB"), (x, y))
+    output.parent.mkdir(parents=True, exist_ok=True)
+    sheet.save(output, quality=90)
+
+
+def analyze_encoded_frames(
+    name: str,
+    decoded: dict[int, Path],
+    alpha_output: Path,
+    parameters: ChromaKeyParameters,
+    qa: Path,
+    contact_columns: int,
+) -> dict[str, Any]:
+    alpha_output.mkdir(parents=True, exist_ok=True)
+    records: list[dict[str, Any]] = []
+    for sequence, (frame_index, source) in enumerate(decoded.items(), start=1):
+        alpha_path = alpha_output / f"frame_{sequence:05d}.png"
+        key_image(source, alpha_path, parameters)
+        records.append(
+            {
+                "frame": frame_index,
+                "file": source.name,
+                **analyze_frame(source, parameters),
+            }
+        )
+    maxima = {
+        metric: max(float(record[metric]) for record in records)
+        for metric in POST_ENCODE_LIMITS
+    }
+    violations = [
+        {
+            "metric": metric,
+            "actual": maxima[metric],
+            "limit": limit,
+        }
+        for metric, limit in POST_ENCODE_LIMITS.items()
+        if maxima[metric] > limit
+    ]
+    run(
+        [
+            sys.executable,
+            str(PIPELINE),
+            "contact",
+            str(alpha_output),
+            "--output",
+            str(qa / f"{name}-alpha-contact.jpg"),
+            "--columns",
+            str(contact_columns),
+        ]
+    )
+    create_background_matrix(
+        image_frames(alpha_output),
+        qa / f"{name}-background-matrix.jpg",
+    )
+    return {
+        "passed": not violations,
+        "checkedFrames": len(records),
+        "limits": POST_ENCODE_LIMITS,
+        "maxima": maxima,
+        "violations": violations,
+        "frames": records,
+    }
 
 
 def load_budget_report(path: Path) -> dict[str, Any]:
@@ -309,6 +493,9 @@ def compile_motion(args: argparse.Namespace) -> int:
         raise ValueError("--duplicate-threshold 不能小于 0")
     if args.contact_columns < 1:
         raise ValueError("--contact-columns 必须至少为 1")
+    if args.poster_source_frame < 0:
+        raise ValueError("--poster-source-frame 不能小于 0")
+    anchor_sources = parse_anchors(args.anchor)
     safe_prepare_output(output, args.force)
 
     source_probe = probe(source)
@@ -319,7 +506,7 @@ def compile_motion(args: argparse.Namespace) -> int:
     interpolation = output / "interpolation"
     raw_frames = interpolation / "frames"
     cleaned_frames = output / "frames" / "final"
-    alpha_qa_frames = output / "frames" / "alpha-qa"
+    post_encode_frames = output / "post-encode-frames"
     qa = output / "qa"
     final = output / "final"
     qa.mkdir(parents=True, exist_ok=True)
@@ -345,7 +532,17 @@ def compile_motion(args: argparse.Namespace) -> int:
     raw_count = len(image_frames(raw_frames))
     if raw_count < 3:
         raise RuntimeError("母版切帧后少于 3 帧")
+    requested_source_frames = {
+        "poster": args.poster_source_frame,
+        **anchor_sources,
+    }
+    for name, source_frame in requested_source_frames.items():
+        if source_frame >= raw_count:
+            raise ValueError(
+                f"{name} 源帧 {source_frame} 超出插帧范围 0..{raw_count - 1}"
+            )
 
+    cleanup_report_path = qa / "cleanup.json"
     if args.loop or args.end_reference:
         cleanup_command = [
             sys.executable,
@@ -357,7 +554,7 @@ def compile_motion(args: argparse.Namespace) -> int:
             "--duplicate-threshold",
             str(args.duplicate_threshold),
             "--report",
-            str(qa / "cleanup.json"),
+            str(cleanup_report_path),
         ]
         if args.end_reference:
             cleanup_command.extend(
@@ -368,46 +565,35 @@ def compile_motion(args: argparse.Namespace) -> int:
             )
         run(cleanup_command)
         final_frames = cleaned_frames
+        cleanup_data = json.loads(cleanup_report_path.read_text(encoding="utf-8"))
+        kept_source_indices = [
+            int(index) for index in cleanup_data["keptSourceIndices"]
+        ]
     else:
         final_frames = raw_frames
+        kept_source_indices = list(range(raw_count))
         print("提示：未传 --loop 或 --end-reference，使用全部插帧", flush=True)
 
     final_frame_paths = image_frames(final_frames)
     if not final_frame_paths:
         raise RuntimeError("清理后没有可编码帧")
     final_count = len(final_frame_paths)
-    detected_key = sample_key_color(final_frame_paths[0])
-    detected_key_color = key_color_hex(detected_key)
-    key_validation = validate_key_source(final_frame_paths, detected_key)
-    alpha_qa_sources = representative_frames(final_frame_paths)
-    prepare_alpha_qa_frames(alpha_qa_sources, alpha_qa_frames, detected_key)
-    shutil.copy2(
-        image_frames(alpha_qa_frames)[0],
-        final / "poster-alpha.png",
+    if final_count != len(kept_source_indices):
+        raise RuntimeError("清理报告帧数与最终帧目录不一致")
+    source_key = sample_key_color_many(representative_frames(final_frame_paths))
+    source_key_color = key_color_hex(source_key)
+    source_key_validation = validate_key_source(final_frame_paths, source_key)
+    anchor_manifest = {
+        name: {
+            "sourceFrame": source_frame,
+            "finalFrame": map_source_frame(source_frame, kept_source_indices),
+        }
+        for name, source_frame in anchor_sources.items()
+    }
+    poster_final_frame = map_source_frame(
+        args.poster_source_frame,
+        kept_source_indices,
     )
-    run(
-        [
-            sys.executable,
-            str(PIPELINE),
-            "analyze",
-            str(alpha_qa_frames),
-            "--output",
-            str(qa / "analysis.json"),
-        ]
-    )
-    run(
-        [
-            sys.executable,
-            str(PIPELINE),
-            "contact",
-            str(alpha_qa_frames),
-            "--output",
-            str(qa / "contact-sheet.jpg"),
-            "--columns",
-            str(args.contact_columns),
-        ]
-    )
-    shutil.rmtree(alpha_qa_frames)
 
     desktop_size = dimensions_for_width(
         args.desktop_width,
@@ -440,6 +626,70 @@ def compile_motion(args: argparse.Namespace) -> int:
         args.mobile_crf,
     )
 
+    desktop_all_intra = all_frames_are_keyframes(desktop_output)
+    mobile_all_intra = all_frames_are_keyframes(mobile_output)
+    if not desktop_all_intra or not mobile_all_intra:
+        raise RuntimeError("最终 MP4 不是全关键帧编码，禁止交付")
+
+    qa_indices = sorted(
+        set(representative_indices(final_count) + [poster_final_frame])
+    )
+    desktop_decoded = decode_video_frames(
+        desktop_output,
+        post_encode_frames / "desktop" / "source",
+        qa_indices,
+    )
+    mobile_decoded = decode_video_frames(
+        mobile_output,
+        post_encode_frames / "mobile" / "source",
+        qa_indices,
+    )
+    runtime_key = sample_key_color_many(
+        list(desktop_decoded.values()) + list(mobile_decoded.values())
+    )
+    runtime_key_color = key_color_hex(runtime_key)
+    keying_parameters = default_parameters(runtime_key)
+    desktop_keying_qa = analyze_encoded_frames(
+        "desktop",
+        desktop_decoded,
+        post_encode_frames / "desktop" / "alpha",
+        keying_parameters,
+        qa,
+        args.contact_columns,
+    )
+    mobile_keying_qa = analyze_encoded_frames(
+        "mobile",
+        mobile_decoded,
+        post_encode_frames / "mobile" / "alpha",
+        keying_parameters,
+        qa,
+        args.contact_columns,
+    )
+    post_encode_qa = {
+        "passed": desktop_keying_qa["passed"] and mobile_keying_qa["passed"],
+        "algorithm": keying_parameters.algorithm,
+        "runtimeKeyColor": runtime_key_color,
+        "parameters": keying_parameters.manifest(),
+        "frameIndices": qa_indices,
+        "desktop": desktop_keying_qa,
+        "mobile": mobile_keying_qa,
+    }
+    post_encode_qa_path = qa / "post-encode-keying.json"
+    post_encode_qa_path.write_text(
+        json.dumps(post_encode_qa, ensure_ascii=False, indent=2),
+        encoding="utf-8",
+    )
+    if not post_encode_qa["passed"]:
+        raise RuntimeError(
+            f"编码后色键检查未通过，请查看 {post_encode_qa_path}"
+        )
+
+    key_image(
+        desktop_decoded[poster_final_frame],
+        final / "poster-alpha.png",
+        keying_parameters,
+    )
+
     desktop_probe = probe(desktop_output)
     mobile_probe = probe(mobile_output)
     manifest = {
@@ -451,12 +701,13 @@ def compile_motion(args: argparse.Namespace) -> int:
         },
         "compile": {
             "backgroundOwner": "page",
-            "detectedKeyColor": detected_key_color,
-            "keyValidation": key_validation,
+            "sourceKeyColor": source_key_color,
+            "runtimeKeyColor": runtime_key_color,
+            "sourceKeyValidation": source_key_validation,
             "fps": args.fps,
             "rawFrameCount": raw_count,
             "finalFrameCount": final_count,
-            "alphaQaFrameCount": len(alpha_qa_sources),
+            "alphaQaFrameCount": len(qa_indices),
             "duration": final_count / args.fps,
             "cleanup": (
                 "loop"
@@ -471,19 +722,36 @@ def compile_motion(args: argparse.Namespace) -> int:
             "interpolationVerdict": interpolation_report["verdict"],
             "budgetReport": str(budget_path),
             "selection": budget_report["delivery"],
+            "postEncodeKeyingReport": str(post_encode_qa_path),
+            "postEncodeKeyingPassed": post_encode_qa["passed"],
             "intermediateFramesRetained": args.keep_frames,
+        },
+        "runtime": {
+            "type": "chroma-video",
+            "frameCount": final_count,
+            "fps": args.fps,
+            "keying": keying_parameters.manifest(),
+            "anchors": anchor_manifest,
+            "posterFrame": poster_final_frame,
+            "assets": {
+                "poster": "final/poster-alpha.png",
+                "desktop": "final/motion-chroma-desktop.mp4",
+                "mobile": "final/motion-chroma-mobile.mp4",
+            },
         },
         "outputs": {
             "poster": {
                 "path": str(final / "poster-alpha.png"),
                 "alpha": True,
+                "sourceFrame": args.poster_source_frame,
+                "finalFrame": poster_final_frame,
             },
             "desktop": {
                 "path": str(desktop_output),
                 "width": desktop_size[0],
                 "height": desktop_size[1],
                 "bytes": desktop_output.stat().st_size,
-                "allFramesAreKeyframes": all_frames_are_keyframes(desktop_output),
+                "allFramesAreKeyframes": desktop_all_intra,
                 "probe": desktop_probe,
             },
             "mobile": {
@@ -491,7 +759,7 @@ def compile_motion(args: argparse.Namespace) -> int:
                 "width": mobile_size[0],
                 "height": mobile_size[1],
                 "bytes": mobile_output.stat().st_size,
-                "allFramesAreKeyframes": all_frames_are_keyframes(mobile_output),
+                "allFramesAreKeyframes": mobile_all_intra,
                 "probe": mobile_probe,
             },
         },
@@ -505,6 +773,8 @@ def compile_motion(args: argparse.Namespace) -> int:
         for directory in (raw_frames, cleaned_frames):
             if directory.is_dir():
                 shutil.rmtree(directory)
+        if post_encode_frames.is_dir():
+            shutil.rmtree(post_encode_frames)
         frames_root = output / "frames"
         if frames_root.is_dir() and not any(frames_root.iterdir()):
             frames_root.rmdir()
@@ -544,6 +814,19 @@ def parser() -> argparse.ArgumentParser:
     result.add_argument("--seam-window", type=int, default=40)
     result.add_argument("--duplicate-threshold", type=float, default=0.003)
     result.add_argument("--contact-columns", type=int, default=8)
+    result.add_argument(
+        "--anchor",
+        action="append",
+        default=[],
+        metavar="NAME=SOURCE_FRAME",
+        help="记录清理前插帧序列中的语义锚点，可重复传入",
+    )
+    result.add_argument(
+        "--poster-source-frame",
+        type=int,
+        default=0,
+        help="静态降级图对应的清理前插帧索引；默认 0",
+    )
     result.add_argument(
         "--allow-upscale",
         action="store_true",
