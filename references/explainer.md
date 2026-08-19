@@ -25,7 +25,8 @@
 `pointer-angle` 使用首尾相连和最短环形距离。其余交互默认是有起止点的线性序列。
 自动播放支持 `loop`、`pingpong` 和 `once`。
 
-滚动模式生成前先运行 `motion_budget.py --scroll-pages <屏数> --strict`。默认按每屏
+滚动模式生成前先按 [delivery-selection.md](delivery-selection.md) 运行预算（滚动
+驱动必须传合同的 `--background-owner` 和 `--scroll-pages`）。默认按每屏
 24 帧准备素材；低于约 20 帧/屏时，长滚动会出现可感知的换帧阶梯，不能只靠调小
 `smooth-time` 掩盖。
 

@@ -22,6 +22,8 @@ import urllib.request
 from pathlib import Path
 from typing import Any
 
+from production_gate import validate_pilot_approval, verify_frame_chain
+
 from PIL import Image
 
 from oil_motion_config import require_api_key
@@ -140,6 +142,7 @@ def redacted_metadata(
     payload: dict[str, Any],
     submit_response: dict[str, Any],
     final_response: dict[str, Any],
+    production_gate: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     def redact_remote_urls(value: Any) -> Any:
         if isinstance(value, dict):
@@ -172,11 +175,64 @@ def redacted_metadata(
         else:
             safe_content.append(item)
     safe_payload["content"] = safe_content
-    return {
+    result = {
         "payload": safe_payload,
         "submit": redact_remote_urls(submit_response),
         "final": redact_remote_urls(final_response),
     }
+    if production_gate is not None:
+        result["productionGate"] = production_gate
+    return result
+
+
+def validate_production_gate(args: argparse.Namespace) -> dict[str, Any]:
+    if args.segment_index < 1:
+        raise ValueError("--segment-index 必须大于等于 1")
+    if args.stage == "pilot":
+        if args.segment_index != 1:
+            raise ValueError("Pilot 只能是第 1 段；后续片段必须使用 --stage production")
+        return {"stage": "pilot", "segmentIndex": 1}
+
+    if args.segment_index < 2:
+        raise ValueError("production 阶段从第 2 段开始，--segment-index 必须大于等于 2")
+    if not args.pilot_approval:
+        raise ValueError("production 阶段必须提供 --pilot-approval")
+    approval = validate_pilot_approval(args.pilot_approval)
+    gate: dict[str, Any] = {
+        "stage": "production",
+        "segmentIndex": args.segment_index,
+        "pilotApproval": str(
+            Path(args.pilot_approval).expanduser().resolve()
+        ),
+        "continuityMode": args.continuity_mode,
+    }
+    if args.continuity_mode is None:
+        raise ValueError(
+            "production 阶段必须显式提供 --continuity-mode chain|independent"
+        )
+    approved_mode = approval["continuityMode"]
+    if args.continuity_mode != approved_mode:
+        raise ValueError(
+            "production 连续模式与 Pilot 批准的 Concept Contract 不一致："
+            f"合同要求 {approved_mode}，收到 {args.continuity_mode}"
+        )
+    if args.continuity_mode == "chain":
+        if not args.previous_tail or not args.first_frame or not args.frame_chain_manifest:
+            raise ValueError(
+                "chain 模式必须同时提供 --previous-tail、--first-frame "
+                "和 --frame-chain-manifest"
+            )
+        link = verify_frame_chain(
+            args.previous_tail,
+            args.first_frame,
+            args.segment_index,
+            args.frame_chain_manifest,
+        )
+        gate["frameChain"] = link
+        gate["frameChainManifest"] = str(
+            Path(args.frame_chain_manifest).expanduser().resolve()
+        )
+    return gate
 
 
 def build_payload(args: argparse.Namespace) -> dict[str, Any]:
@@ -245,6 +301,7 @@ def build_payload(args: argparse.Namespace) -> dict[str, Any]:
 def generate(args: argparse.Namespace) -> int:
     # 先做纯本地参数校验，避免因为缺少密钥而掩盖组合错误。
     payload = build_payload(args)
+    gate_report = validate_production_gate(args)
     api_key = require_api_key()
 
     output = Path(args.output).expanduser().resolve()
@@ -280,7 +337,12 @@ def generate(args: argparse.Namespace) -> int:
     metadata.parent.mkdir(parents=True, exist_ok=True)
     metadata.write_text(
         json.dumps(
-            redacted_metadata(payload, submit_response, final_response),
+            redacted_metadata(
+                payload,
+                submit_response,
+                final_response,
+                gate_report,
+            ),
             ensure_ascii=False,
             indent=2,
         ),
@@ -350,6 +412,21 @@ def parser() -> argparse.ArgumentParser:
     )
     result.add_argument("--seed", type=int)
     result.add_argument("--frames", type=int)
+    result.add_argument(
+        "--stage",
+        choices=("pilot", "production"),
+        required=True,
+        help="pilot 只允许第 1 段；production 会强制校验 Pilot 批准文件",
+    )
+    result.add_argument("--segment-index", type=int, default=1)
+    result.add_argument("--pilot-approval")
+    result.add_argument(
+        "--continuity-mode",
+        choices=("chain", "independent"),
+        help="production 阶段必填；chain 会校验上一段尾帧与本段首帧 SHA-256",
+    )
+    result.add_argument("--previous-tail")
+    result.add_argument("--frame-chain-manifest")
     result.add_argument("--output", required=True)
     result.add_argument("--last-frame-output")
     result.add_argument("--metadata")

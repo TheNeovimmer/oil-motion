@@ -48,6 +48,18 @@
       "prompt": "这个角色要同时跟随鼠标横向和纵向看，帧很多，图集预算可能放不下。你自己选最佳实现，不要让我决定。",
       "expected_output": "识别为二维参数并运行 motion_budget.py；即使图集超预算也不能把二维语义压成一条视频；自动降低采样密度、拆分离散状态或调整显示尺寸后重新预算，最终使用 alpha-atlas；不向用户询问图集或视频选择。",
       "files": []
+    },
+    {
+      "id": 9,
+      "prompt": "我要一段单人动漫格斗胜利演武的网页动画：一个角色，动漫风格，每段同一张脸，段与段首尾帧连续，背景和角色在同一个视频里生成，不要绿幕。随页面滚动推进。",
+      "expected_output": "先锁定 Concept Contract：subject_count=1、动漫风格、胜利演武叙事、background_owner=video、clip_continuity=chain、scroll 输入、同脸与首尾帧连续，不把单人动漫扩写成双人写实；先写 Identity Bible 锁定面孔、发型、服装和标记；motion_budget.py 必须显式传 --background-owner video 并选择 baked-video；第一段只用 video_job.py --stage pilot，挂载真实页面验收并生成带工件 SHA-256 的 pilot/approval.json；第 2 段起使用 production 阶段和 chain 连续模式，上一段验收尾帧与下一段首帧 SHA-256 完全一致并写入 qa/frame-chain.json；运行时不做任何抠色或 WebGL 色键处理。",
+      "files": []
+    },
+    {
+      "id": 10,
+      "prompt": "用绿幕路线做的角色动画，编译后出现人物内部大块绿斑和一圈绿边，你调一下 WebGL 抠色阈值把它压掉就行。",
+      "expected_output": "拒绝用调 WebGL 阈值掩盖母版缺陷；先确认任务确有透明复用需求，否则改走 baked-video。必须用与网页 renderer 相同的 keyColor、similarity、smoothness、spill 参数模拟并检查全部最终帧，抠色后仍可见的内部绿块、边缘溢色或压缩脏边即拒收；正常的纯色键背景孔洞应透明，不能因拓扑封闭而误拒；再在白、黑、洋红和真实页面背景上验收。失败则重做母版或改用带 Alpha 的离线 matte。",
+      "files": []
     }
   ]
 }

@@ -1,8 +1,13 @@
 #!/usr/bin/env python3
-"""把绿幕动作母版编译为可精确寻帧的全关键帧 MP4。
+"""把动作母版编译为可精确寻帧的全关键帧 MP4。
 
-适合一维连续参数控制的大尺寸动画。脚本强制插帧并保留均匀色键背景，网页使用
-WebGL 实时抠色；最终页面背景不会写进视频。
+适合一维连续参数控制的大尺寸动画，支持两种背景归属：
+
+- `--background-owner page`（chroma 路线）：强制插帧并保留均匀色键背景，网页使用
+  WebGL 实时抠色；编译前逐帧模拟同一套 shader 参数，检查主体内部绿块、边缘溢色
+  和压缩脏边，并输出多种测试底色上的抠色合成图供验收。
+- `--background-owner video`（baked 路线）：背景与主体在同一视频中烘焙生成，
+  不做任何抠色；视频本身就是最终画面，运行时只做整数帧 seek。
 """
 
 from __future__ import annotations
@@ -25,7 +30,6 @@ from chroma_key import (
     key_image,
     key_mode,
 )
-
 
 SCRIPT_DIR = Path(__file__).resolve().parent
 PIPELINE = SCRIPT_DIR / "motion_pipeline.py"
@@ -360,15 +364,18 @@ def analyze_encoded_frames(
         "violations": violations,
         "frames": records,
     }
-
-
-def load_budget_report(path: Path) -> dict[str, Any]:
+def load_budget_report(
+    path: Path,
+    expected: str = "chroma-video",
+) -> dict[str, Any]:
     if not path.is_file():
         raise FileNotFoundError(f"找不到预算报告：{path}")
     report = json.loads(path.read_text(encoding="utf-8"))
     delivery = report.get("delivery", {})
-    if delivery.get("selected") != "chroma-video":
-        raise ValueError("预算报告没有选择 chroma-video，禁止执行视频编译路线")
+    if delivery.get("selected") != expected:
+        raise ValueError(
+            f"预算报告没有选择 {expected}，禁止执行视频编译路线"
+        )
     if not report.get("passes"):
         raise ValueError("预算报告存在阻断项，禁止执行视频编译路线")
     return report
@@ -478,7 +485,11 @@ def compile_motion(args: argparse.Namespace) -> int:
     budget_path = Path(args.budget_report).expanduser().resolve()
     if not source.is_file():
         raise FileNotFoundError(f"找不到视频：{source}")
-    budget_report = load_budget_report(budget_path)
+    background_owner = args.background_owner
+    expected_delivery = (
+        "baked-video" if background_owner == "video" else "chroma-video"
+    )
+    budget_report = load_budget_report(budget_path, expected_delivery)
     if args.loop and args.end_reference:
         raise ValueError("--loop 与 --end-reference 不能同时使用")
     if args.fps <= 0:
@@ -580,9 +591,6 @@ def compile_motion(args: argparse.Namespace) -> int:
     final_count = len(final_frame_paths)
     if final_count != len(kept_source_indices):
         raise RuntimeError("清理报告帧数与最终帧目录不一致")
-    source_key = sample_key_color_many(representative_frames(final_frame_paths))
-    source_key_color = key_color_hex(source_key)
-    source_key_validation = validate_key_source(final_frame_paths, source_key)
     anchor_manifest = {
         name: {
             "sourceFrame": source_frame,
@@ -594,6 +602,31 @@ def compile_motion(args: argparse.Namespace) -> int:
         args.poster_source_frame,
         kept_source_indices,
     )
+    source_key_color: str | None = None
+    source_key_validation: dict[str, object] | None = None
+    if background_owner == "page":
+        source_key = sample_key_color_many(
+            representative_frames(final_frame_paths)
+        )
+        source_key_color = key_color_hex(source_key)
+        source_key_validation = validate_key_source(
+            final_frame_paths,
+            source_key,
+        )
+    else:
+        shutil.copy2(final_frame_paths[poster_final_frame], final / "poster.png")
+        run(
+            [
+                sys.executable,
+                str(PIPELINE),
+                "contact",
+                str(final_frames),
+                "--output",
+                str(qa / "contact-sheet.jpg"),
+                "--columns",
+                str(args.contact_columns),
+            ]
+        )
 
     desktop_size = dimensions_for_width(
         args.desktop_width,
@@ -607,8 +640,9 @@ def compile_motion(args: argparse.Namespace) -> int:
         source_height,
         args.allow_upscale,
     )
-    desktop_output = final / "motion-chroma-desktop.mp4"
-    mobile_output = final / "motion-chroma-mobile.mp4"
+    asset_kind = "chroma" if background_owner == "page" else "baked"
+    desktop_output = final / f"motion-{asset_kind}-desktop.mp4"
+    mobile_output = final / f"motion-{asset_kind}-mobile.mp4"
     encode_all_intra(
         final_frames,
         desktop_output,
@@ -631,64 +665,71 @@ def compile_motion(args: argparse.Namespace) -> int:
     if not desktop_all_intra or not mobile_all_intra:
         raise RuntimeError("最终 MP4 不是全关键帧编码，禁止交付")
 
-    qa_indices = sorted(
-        set(representative_indices(final_count) + [poster_final_frame])
-    )
-    desktop_decoded = decode_video_frames(
-        desktop_output,
-        post_encode_frames / "desktop" / "source",
-        qa_indices,
-    )
-    mobile_decoded = decode_video_frames(
-        mobile_output,
-        post_encode_frames / "mobile" / "source",
-        qa_indices,
-    )
-    runtime_key = sample_key_color_many(
-        list(desktop_decoded.values()) + list(mobile_decoded.values())
-    )
-    runtime_key_color = key_color_hex(runtime_key)
-    keying_parameters = default_parameters(runtime_key)
-    desktop_keying_qa = analyze_encoded_frames(
-        "desktop",
-        desktop_decoded,
-        post_encode_frames / "desktop" / "alpha",
-        keying_parameters,
-        qa,
-        args.contact_columns,
-    )
-    mobile_keying_qa = analyze_encoded_frames(
-        "mobile",
-        mobile_decoded,
-        post_encode_frames / "mobile" / "alpha",
-        keying_parameters,
-        qa,
-        args.contact_columns,
-    )
-    post_encode_qa = {
-        "passed": desktop_keying_qa["passed"] and mobile_keying_qa["passed"],
-        "algorithm": keying_parameters.algorithm,
-        "runtimeKeyColor": runtime_key_color,
-        "parameters": keying_parameters.manifest(),
-        "frameIndices": qa_indices,
-        "desktop": desktop_keying_qa,
-        "mobile": mobile_keying_qa,
-    }
-    post_encode_qa_path = qa / "post-encode-keying.json"
-    post_encode_qa_path.write_text(
-        json.dumps(post_encode_qa, ensure_ascii=False, indent=2),
-        encoding="utf-8",
-    )
-    if not post_encode_qa["passed"]:
-        raise RuntimeError(
-            f"编码后色键检查未通过，请查看 {post_encode_qa_path}"
+    qa_indices: list[int] = []
+    runtime_key_color: str | None = None
+    keying_parameters: ChromaKeyParameters | None = None
+    post_encode_qa_path: Path | None = None
+    post_encode_qa: dict[str, Any] | None = None
+    if background_owner == "page":
+        qa_indices = sorted(
+            set(representative_indices(final_count) + [poster_final_frame])
         )
-
-    key_image(
-        desktop_decoded[poster_final_frame],
-        final / "poster-alpha.png",
-        keying_parameters,
-    )
+        desktop_decoded = decode_video_frames(
+            desktop_output,
+            post_encode_frames / "desktop" / "source",
+            qa_indices,
+        )
+        mobile_decoded = decode_video_frames(
+            mobile_output,
+            post_encode_frames / "mobile" / "source",
+            qa_indices,
+        )
+        runtime_key = sample_key_color_many(
+            list(desktop_decoded.values()) + list(mobile_decoded.values())
+        )
+        runtime_key_color = key_color_hex(runtime_key)
+        keying_parameters = default_parameters(runtime_key)
+        desktop_keying_qa = analyze_encoded_frames(
+            "desktop",
+            desktop_decoded,
+            post_encode_frames / "desktop" / "alpha",
+            keying_parameters,
+            qa,
+            args.contact_columns,
+        )
+        mobile_keying_qa = analyze_encoded_frames(
+            "mobile",
+            mobile_decoded,
+            post_encode_frames / "mobile" / "alpha",
+            keying_parameters,
+            qa,
+            args.contact_columns,
+        )
+        post_encode_qa = {
+            "passed": (
+                desktop_keying_qa["passed"] and mobile_keying_qa["passed"]
+            ),
+            "algorithm": keying_parameters.algorithm,
+            "runtimeKeyColor": runtime_key_color,
+            "parameters": keying_parameters.manifest(),
+            "frameIndices": qa_indices,
+            "desktop": desktop_keying_qa,
+            "mobile": mobile_keying_qa,
+        }
+        post_encode_qa_path = qa / "post-encode-keying.json"
+        post_encode_qa_path.write_text(
+            json.dumps(post_encode_qa, ensure_ascii=False, indent=2),
+            encoding="utf-8",
+        )
+        if not post_encode_qa["passed"]:
+            raise RuntimeError(
+                f"编码后色键检查未通过，请查看 {post_encode_qa_path}"
+            )
+        key_image(
+            desktop_decoded[poster_final_frame],
+            final / "poster-alpha.png",
+            keying_parameters,
+        )
 
     desktop_probe = probe(desktop_output)
     mobile_probe = probe(mobile_output)
@@ -700,7 +741,7 @@ def compile_motion(args: argparse.Namespace) -> int:
             "probe": source_probe,
         },
         "compile": {
-            "backgroundOwner": "page",
+            "backgroundOwner": background_owner,
             "sourceKeyColor": source_key_color,
             "runtimeKeyColor": runtime_key_color,
             "sourceKeyValidation": source_key_validation,
@@ -722,27 +763,39 @@ def compile_motion(args: argparse.Namespace) -> int:
             "interpolationVerdict": interpolation_report["verdict"],
             "budgetReport": str(budget_path),
             "selection": budget_report["delivery"],
-            "postEncodeKeyingReport": str(post_encode_qa_path),
-            "postEncodeKeyingPassed": post_encode_qa["passed"],
+            "postEncodeKeyingReport": (
+                str(post_encode_qa_path) if post_encode_qa_path else None
+            ),
+            "postEncodeKeyingPassed": (
+                post_encode_qa["passed"] if post_encode_qa else None
+            ),
             "intermediateFramesRetained": args.keep_frames,
         },
         "runtime": {
-            "type": "chroma-video",
+            "type": "chroma-video" if background_owner == "page" else "baked-video",
             "frameCount": final_count,
             "fps": args.fps,
-            "keying": keying_parameters.manifest(),
+            "keying": keying_parameters.manifest() if keying_parameters else None,
             "anchors": anchor_manifest,
             "posterFrame": poster_final_frame,
             "assets": {
-                "poster": "final/poster-alpha.png",
-                "desktop": "final/motion-chroma-desktop.mp4",
-                "mobile": "final/motion-chroma-mobile.mp4",
+                "poster": (
+                    "final/poster-alpha.png"
+                    if background_owner == "page"
+                    else "final/poster.png"
+                ),
+                "desktop": f"final/motion-{asset_kind}-desktop.mp4",
+                "mobile": f"final/motion-{asset_kind}-mobile.mp4",
             },
         },
         "outputs": {
             "poster": {
-                "path": str(final / "poster-alpha.png"),
-                "alpha": True,
+                "path": str(
+                    final / "poster-alpha.png"
+                    if background_owner == "page"
+                    else final / "poster.png"
+                ),
+                "alpha": background_owner == "page",
                 "sourceFrame": args.poster_source_frame,
                 "finalFrame": poster_final_frame,
             },
@@ -784,14 +837,32 @@ def compile_motion(args: argparse.Namespace) -> int:
 
 def parser() -> argparse.ArgumentParser:
     result = argparse.ArgumentParser(
-        description="把绿幕动作母版插帧并编译为桌面与移动端全关键帧视频，供 WebGL 实时抠色"
+        description=(
+            "把动作母版插帧并编译为桌面与移动端全关键帧视频；"
+            "chroma 路线供 WebGL 实时抠色，baked 路线直接呈现烘焙场景"
+        )
     )
-    result.add_argument("source", help="MiniMax 生成的均匀绿幕动作母版 MP4")
+    result.add_argument(
+        "source",
+        help="MiniMax 生成的动作母版 MP4（chroma 路线必须为均匀色键背景）",
+    )
     result.add_argument("output_dir", help="新的构建目录")
+    result.add_argument(
+        "--background-owner",
+        choices=("page", "video"),
+        required=True,
+        help=(
+            "page：色键母版，编译前逐帧模拟运行时抠色并检查残留，供 WebGL 实时抠色；"
+            "video：背景已烘焙进视频，不做抠色。必须显式传入，禁止静默回退绿幕"
+        ),
+    )
     result.add_argument(
         "--budget-report",
         required=True,
-        help="motion_budget.py 生成且已选择 chroma-video 的 JSON 报告",
+        help=(
+            "motion_budget.py 生成的 JSON 报告；page 要求选择 chroma-video，"
+            "video 要求选择 baked-video"
+        ),
     )
     mode = result.add_mutually_exclusive_group()
     mode.add_argument("--loop", action="store_true", help="按闭环首帧裁掉尾部停顿")

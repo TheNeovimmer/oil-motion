@@ -69,14 +69,15 @@ Once processed, the browser never regenerates video during interaction — it se
 
 ## Asset formats
 
-Every animation starts from a chroma-key master while the page owns the final background. The agent chooses the delivery format from frame size, duration, access pattern, and device budget — you don't need to decide.
+The agent first locks a Concept Contract — subject count, style, mood, narrative form, background ownership, interaction input, and continuity requirements — and never rewrites "single anime character" into something else on its own. Background ownership decides the production route: scene narratives (camera moves, environmental light, ground contact, background continuity) bake the background and the subject into the same video by default; chroma keying is used only when the subject genuinely needs to be reused as a transparent layer over a page-owned background. The agent then picks the delivery format from frame size, duration, access pattern, and device budget — you don't need to decide.
 
 | Use case | Common format | Why |
 | --- | --- | --- |
-| Small, circular, 2D, or frequently-seeked motion | Alpha WebP sprite sheet | Keying happens during the build; random access stays responsive |
-| Large, long, one-dimensional scroll motion | All-keyframe chroma MP4 | WebGL keys it at runtime while video compression avoids a huge RGBA atlas |
+| Scene narratives, camera moves, environmental light, ground contact | Baked all-keyframe MP4 | Background and subject are generated in the same video; best continuity, no keying risk |
+| Transparent reuse: small, circular, 2D, or frequently-seeked motion | Alpha WebP sprite sheet | Keying happens during the build; random access stays responsive |
+| Transparent reuse: large, long, one-dimensional scroll motion | All-keyframe chroma MP4 | WebGL keys it at runtime while video compression avoids a huge RGBA atlas |
 
-The agent runs the budget check and implements only the selected primary route. Both routes keep the page background independent, so changing it never requires regenerating the subject.
+The agent runs the budget check and implements only the selected primary route. Before any batch generation, a first-screen pilot must pass and produce a hashed approval record. Later clips are blocked before any network call if the approval is missing or the previous tail and next first frame do not have the same SHA-256.
 
 Compression follows the actual on-page display size. Larger display areas keep higher resolution; smaller ones drop unnecessary data. When file size and clarity conflict, on-page visual quality wins.
 

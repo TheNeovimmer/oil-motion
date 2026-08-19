@@ -25,6 +25,12 @@ from chroma_key import analyze_frame, default_parameters, key_image
 
 
 class ChromaVideoCompileTests(unittest.TestCase):
+    def test_compiler_requires_explicit_background_owner(self) -> None:
+        with self.assertRaises(SystemExit):
+            COMPILE.parser().parse_args(
+                ["source.mp4", "build", "--budget-report", "budget.json"]
+            )
+
     def test_representative_frames_include_both_ends(self) -> None:
         paths = [Path(f"frame_{index:05d}.png") for index in range(100)]
 
@@ -141,6 +147,24 @@ class ChromaVideoCompileTests(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, "没有选择 chroma-video"):
                 COMPILE.load_budget_report(path)
 
+    def test_baked_compiler_accepts_baked_budget_report(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "budget.json"
+            path.write_text(
+                json.dumps(
+                    {
+                        "passes": True,
+                        "delivery": {"selected": "baked-video"},
+                    }
+                ),
+                encoding="utf-8",
+            )
+
+            report = COMPILE.load_budget_report(path, "baked-video")
+
+            self.assertEqual(report["delivery"]["selected"], "baked-video")
+            with self.assertRaisesRegex(ValueError, "没有选择 chroma-video"):
+                COMPILE.load_budget_report(path)
 
 if __name__ == "__main__":
     unittest.main()

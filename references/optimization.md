@@ -41,7 +41,8 @@ python3 "$OIL_MOTION/scripts/optimize_motion.py" atlas frames/final \
 工具先用“最大 CSS 展示尺寸 × DPR”计算最低单帧像素，再保持单帧尺寸并搜索最高
 WebP 质量；无法达标时只能缩小到这个清晰度下限。输出同名 manifest 和
 `.optimize.json` 报告。`clarityMet` 必须为 `true`；若 `targetMet` 为 `false`，
-重新运行 `motion_budget.py`：一维序列可自动改用绿幕视频，二维或环形资源则降低参数采样密度或拆状态。不要继续缩小单帧。
+按 [delivery-selection.md](delivery-selection.md) 重新预算并遵循其超预算处理，
+不要继续缩小单帧。
 
 ## 选择原则
 
