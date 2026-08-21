@@ -27,6 +27,8 @@ export type ChromaVideoRendererOptions = {
 
 export type ChromaVideoRenderer = {
   render(frame: number): void;
+  startLive(): void;
+  stopLive(): void;
   resize(): void;
   destroy(): void;
 };
@@ -249,6 +251,8 @@ export function createChromaVideoRenderer(
   let pendingFrame: number | null = 0;
   let requestedFrame = 0;
   let seekStartedAt = 0;
+  let live = false;
+  let liveHandle = 0;
 
   const resize = () => {
     if (destroyed) return;
@@ -310,6 +314,32 @@ export function createChromaVideoRenderer(
     gl.drawArrays(gl.TRIANGLES, 0, 6);
   };
 
+  const cancelLiveFrame = () => {
+    if (!liveHandle) return;
+    if (video.cancelVideoFrameCallback) {
+      video.cancelVideoFrameCallback(liveHandle);
+    } else {
+      cancelAnimationFrame(liveHandle);
+    }
+    liveHandle = 0;
+  };
+
+  const scheduleLiveFrame = () => {
+    cancelLiveFrame();
+    if (!live || destroyed) return;
+    const callback = () => {
+      liveHandle = 0;
+      if (!live || destroyed) return;
+      draw();
+      scheduleLiveFrame();
+    };
+    if (video.requestVideoFrameCallback) {
+      liveHandle = video.requestVideoFrameCallback(callback);
+    } else {
+      liveHandle = requestAnimationFrame(callback);
+    }
+  };
+
   const flush = () => {
     if (
       destroyed ||
@@ -367,9 +397,20 @@ export function createChromaVideoRenderer(
       pendingFrame = Math.round(clamp(frame, 0, frameCount - 1));
       flush();
     },
+    startLive() {
+      live = true;
+      draw();
+      scheduleLiveFrame();
+    },
+    stopLive() {
+      live = false;
+      cancelLiveFrame();
+    },
     resize,
     destroy() {
       destroyed = true;
+      live = false;
+      cancelLiveFrame();
       resizeObserver.disconnect();
       video.removeEventListener("loadeddata", handleLoaded);
       video.removeEventListener("seeked", handleSeeked);

@@ -27,9 +27,7 @@ These animations fit product intros, character interactions, interaction demos, 
 
 ## How it works
 
-AI-generated video can only play from start to finish. To make it follow scroll or mouse input, Oil Motion first generates one continuous motion, then maps the user's input position to animation progress.
-
-For example, a product-teardown animation has 100 frames total. At 30% page scroll the 30th frame shows; at 70% scroll the 70th frame shows. When the user scrolls back, the animation returns along the same frames. Mouse, drag, and device orientation use the same mapping — only the input source differs.
+Oil Motion first turns generated media into a verified timeline, then chooses how input controls time: continuous scrubbing, event-triggered segment playback, or autonomous playback. Scroll, pointer, and component state are input sources; they do not determine the playback mode by themselves.
 
 The full pipeline:
 
@@ -44,7 +42,7 @@ Review frame by frame; remove pauses, duplicates, and artifacts
   ↓
 Trim and compress assets to the actual display size on the page
   ↓
-Map scroll, mouse, drag, touch, or device orientation to animation progress
+Connect the selected input to the selected timeline controller
 ```
 
 The pipeline has three parts.
@@ -65,11 +63,11 @@ Translation, scaling, cropping, playback speed, follow damping, and max rotation
 
 Generated video needs cleanup before it can drive interaction. The agent inspects every frame, trims leading/trailing pauses, removes near-duplicate frames, catches flicker or structural changes, and compresses to the actual display size on the page.
 
-Once processed, the browser never regenerates video during interaction — it seeks within the prepared continuous frames. This keeps the animation responsive and prevents results from differing on each interaction.
+Once processed, the browser never regenerates video during interaction — it seeks or plays within the prepared timeline. This keeps the animation responsive and prevents results from differing on each interaction.
 
 ## Asset formats
 
-The agent first locks a Concept Contract — subject count, style, mood, narrative form, background ownership, interaction input, and continuity requirements — and never rewrites "single anime character" into something else on its own. Background ownership decides the production route: scene narratives (camera moves, environmental light, ground contact, background continuity) bake the background and the subject into the same video by default; chroma keying is used only when the subject genuinely needs to be reused as a transparent layer over a page-owned background. The agent then picks the delivery format from frame size, duration, access pattern, and device budget — you don't need to decide.
+The agent first locks a Concept Contract — subject, style, motion, background ownership, input, time control, and continuity — without expanding the request. Background ownership decides whether the scene is baked into video; parameter space and device budget decide the media format; time control separately decides the runtime controller.
 
 | Use case | Common format | Why |
 | --- | --- | --- |
@@ -77,7 +75,7 @@ The agent first locks a Concept Contract — subject count, style, mood, narrati
 | Transparent reuse: small, circular, 2D, or frequently-seeked motion | Alpha WebP sprite sheet | Keying happens during the build; random access stays responsive |
 | Transparent reuse: large, long, one-dimensional scroll motion | All-keyframe chroma MP4 | WebGL keys it at runtime while video compression avoids a huge RGBA atlas |
 
-The agent runs the budget check and implements only the selected primary route. Before any batch generation, a first-screen pilot must pass and produce a hashed approval record. Later clips are blocked before any network call if the approval is missing or the previous tail and next first frame do not have the same SHA-256.
+The agent runs the budget check and implements only the selected primary route. Before batch generation, a pilot must pass and produce a hashed approval record. Chained clips verify both the generation-input handoff and the decoded output seam.
 
 Compression follows the actual on-page display size. Larger display areas keep higher resolution; smaller ones drop unnecessary data. When file size and clarity conflict, on-page visual quality wins.
 

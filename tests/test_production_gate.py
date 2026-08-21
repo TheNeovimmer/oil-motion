@@ -2,11 +2,15 @@ from __future__ import annotations
 
 import importlib.util
 import json
+import shutil
+import subprocess
 import sys
 import tempfile
 import unittest
 from argparse import Namespace
 from pathlib import Path
+
+from PIL import Image
 
 
 SCRIPT_DIR = Path(__file__).resolve().parents[1] / "scripts"
@@ -24,11 +28,32 @@ def load(name: str):
 
 GATE = load("production_gate")
 VIDEO = load("video_job")
+FFMPEG = shutil.which("ffmpeg")
 
 
 def write(path: Path, value: bytes) -> Path:
     path.write_bytes(value)
     return path
+
+
+def make_color_video(path: Path, color: str) -> None:
+    subprocess.run(
+        [
+            FFMPEG or "ffmpeg",
+            "-hide_banner",
+            "-loglevel",
+            "error",
+            "-y",
+            "-f",
+            "lavfi",
+            "-i",
+            f"color={color}:size=64x64:rate=12:duration=1",
+            "-pix_fmt",
+            "yuv420p",
+            str(path),
+        ],
+        check=True,
+    )
 
 
 class ProductionGateTests(unittest.TestCase):
@@ -116,6 +141,39 @@ class ProductionGateTests(unittest.TestCase):
 
             with self.assertRaisesRegex(ValueError, "连续帧链断裂"):
                 GATE.verify_frame_chain(previous, current, 2)
+
+    def test_frame_similarity_rejects_visible_change(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            first = root / "first.png"
+            second = root / "second.png"
+            Image.new("RGB", (32, 32), (255, 0, 0)).save(first)
+            Image.new("RGB", (32, 32), (0, 0, 255)).save(second)
+
+            metrics = GATE.frame_similarity(first, second)
+
+            self.assertLess(metrics["ssim"], 0.97)
+            self.assertGreater(metrics["normalizedMae"], 0.04)
+
+    @unittest.skipUnless(FFMPEG, "需要 ffmpeg 才能验证成片接缝")
+    def test_output_chain_checks_decoded_video_edges(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            previous = root / "previous.mp4"
+            current = root / "current.mp4"
+            make_color_video(previous, "red")
+            make_color_video(current, "red")
+
+            result = GATE.verify_output_chain(
+                previous,
+                current,
+                2,
+                root / "frame-chain.json",
+                root / "evidence",
+            )
+
+            self.assertTrue(result["passed"])
+            self.assertIn("ssim", result["metrics"])
 
     def test_video_production_requires_pilot_approval(self) -> None:
         args = Namespace(

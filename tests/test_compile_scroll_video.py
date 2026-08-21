@@ -31,6 +31,44 @@ class ChromaVideoCompileTests(unittest.TestCase):
                 ["source.mp4", "build", "--budget-report", "budget.json"]
             )
 
+    def test_compiler_requires_frame_policy_and_timeline_output(self) -> None:
+        with self.assertRaises(SystemExit):
+            COMPILE.parser().parse_args(
+                [
+                    "source.mp4",
+                    "build",
+                    "--background-owner",
+                    "video",
+                    "--budget-report",
+                    "budget.json",
+                ]
+            )
+
+    def test_timeline_keeps_hold_separate_from_exclusive_end(self) -> None:
+        specs = COMPILE.parse_segment_specs(
+            ["first=0:2:3", "second=3:5:6"]
+        )
+
+        timeline = COMPILE.build_timeline(
+            specs,
+            [0, 1, 2, 4, 5, 6],
+            7,
+            24,
+            {"type": "constant", "rate": 1.0},
+        )
+
+        first = timeline["segments"][0]
+        self.assertEqual(timeline["initialState"], "state-0")
+        self.assertEqual(
+            [state["id"] for state in timeline["states"]],
+            ["state-0", "first", "second"],
+        )
+        self.assertEqual(first["from"], "state-0")
+        self.assertEqual(first["to"], "first")
+        self.assertEqual(first["frames"]["hold"], 2)
+        self.assertEqual(first["frames"]["endExclusive"], 3)
+        self.assertLess(first["hold"], first["endExclusive"])
+
     def test_representative_frames_include_both_ends(self) -> None:
         paths = [Path(f"frame_{index:05d}.png") for index in range(100)]
 

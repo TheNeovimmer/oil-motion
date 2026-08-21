@@ -10,7 +10,11 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
+import numpy as np
+from PIL import Image
 import yaml
+
+from media_edges import extract_first_frame, extract_last_frame
 
 PILOT_ARTIFACTS = (
     "conceptContract",
@@ -210,6 +214,100 @@ def verify_frame_chain(
     return link
 
 
+def frame_similarity(previous: Path, current: Path) -> dict[str, float]:
+    with Image.open(previous) as opened:
+        first = np.asarray(opened.convert("RGB"), dtype=np.float64) / 255.0
+    with Image.open(current) as opened:
+        second = np.asarray(opened.convert("RGB"), dtype=np.float64) / 255.0
+    if first.shape != second.shape:
+        raise ValueError(
+            f"相邻成片尺寸不同：{first.shape[1]}x{first.shape[0]} 与 "
+            f"{second.shape[1]}x{second.shape[0]}"
+        )
+    mae = float(np.mean(np.abs(first - second)))
+    first_mean = np.mean(first, axis=(0, 1))
+    second_mean = np.mean(second, axis=(0, 1))
+    first_variance = np.var(first, axis=(0, 1))
+    second_variance = np.var(second, axis=(0, 1))
+    covariance = np.mean(
+        (first - first_mean) * (second - second_mean), axis=(0, 1)
+    )
+    c1 = 0.01**2
+    c2 = 0.03**2
+    ssim = np.mean(
+        ((2 * first_mean * second_mean + c1) * (2 * covariance + c2))
+        / (
+            (first_mean**2 + second_mean**2 + c1)
+            * (first_variance + second_variance + c2)
+        )
+    )
+    return {"ssim": round(float(ssim), 6), "normalizedMae": round(mae, 6)}
+
+
+def verify_output_chain(
+    previous_video: str | Path,
+    next_video: str | Path,
+    segment_index: int,
+    manifest_path: str | Path,
+    evidence_directory: str | Path,
+    minimum_ssim: float = 0.97,
+    maximum_mae: float = 0.04,
+) -> dict[str, Any]:
+    if segment_index < 2:
+        raise ValueError("成片接缝只用于第 2 段及之后的片段")
+    if not 0 <= minimum_ssim <= 1 or not 0 <= maximum_mae <= 1:
+        raise ValueError("SSIM 与 MAE 阈值必须在 0..1")
+    evidence = Path(evidence_directory).expanduser().resolve()
+    previous_tail = evidence / f"segment-{segment_index - 1:02d}-tail.png"
+    next_head = evidence / f"segment-{segment_index:02d}-head.png"
+    extract_last_frame(previous_video, previous_tail)
+    extract_first_frame(next_video, next_head)
+    metrics = frame_similarity(previous_tail, next_head)
+    passed = (
+        metrics["ssim"] >= minimum_ssim
+        and metrics["normalizedMae"] <= maximum_mae
+    )
+    link = {
+        "segmentIndex": segment_index,
+        "verifiedAt": datetime.now(timezone.utc).isoformat(),
+        "passed": passed,
+        "thresholds": {
+            "minimumSsim": minimum_ssim,
+            "maximumNormalizedMae": maximum_mae,
+        },
+        "metrics": metrics,
+        "previousTail": artifact_record(previous_tail),
+        "nextHead": artifact_record(next_head),
+        "previousVideo": artifact_record(previous_video),
+        "nextVideo": artifact_record(next_video),
+    }
+    manifest = Path(manifest_path).expanduser().resolve()
+    if manifest.is_file():
+        payload = json.loads(manifest.read_text(encoding="utf-8"))
+    else:
+        payload = {"schemaVersion": 1, "links": [], "outputLinks": []}
+    output_links = payload.setdefault("outputLinks", [])
+    if not isinstance(output_links, list):
+        raise ValueError(f"帧链清单 outputLinks 格式错误：{manifest}")
+    output_links = [
+        item for item in output_links if item.get("segmentIndex") != segment_index
+    ]
+    output_links.append(link)
+    payload["outputLinks"] = sorted(
+        output_links, key=lambda item: item["segmentIndex"]
+    )
+    manifest.parent.mkdir(parents=True, exist_ok=True)
+    manifest.write_text(
+        json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8"
+    )
+    if not passed:
+        raise ValueError(
+            "相邻成片接缝不连续："
+            f"SSIM {metrics['ssim']:.4f}，MAE {metrics['normalizedMae']:.4f}"
+        )
+    return link
+
+
 def parser() -> argparse.ArgumentParser:
     result = argparse.ArgumentParser(description="校验 oil-motion 生产硬门")
     commands = result.add_subparsers(dest="command", required=True)
@@ -235,6 +333,17 @@ def parser() -> argparse.ArgumentParser:
     chain.add_argument("--next-first", required=True)
     chain.add_argument("--segment-index", type=int, required=True)
     chain.add_argument("--manifest", required=True)
+
+    output_chain = commands.add_parser(
+        "verify-output-chain", help="验证相邻成片解码后的实际接缝"
+    )
+    output_chain.add_argument("--previous-video", required=True)
+    output_chain.add_argument("--next-video", required=True)
+    output_chain.add_argument("--segment-index", type=int, required=True)
+    output_chain.add_argument("--manifest", required=True)
+    output_chain.add_argument("--evidence-dir", required=True)
+    output_chain.add_argument("--min-ssim", type=float, default=0.97)
+    output_chain.add_argument("--max-mae", type=float, default=0.04)
     return result
 
 
@@ -246,7 +355,7 @@ def main() -> int:
     elif args.command == "check-pilot":
         validate_pilot_approval(args.approval)
         print(f"Pilot 工件有效：{Path(args.approval).expanduser().resolve()}")
-    else:
+    elif args.command == "verify-chain":
         verify_frame_chain(
             args.previous_tail,
             args.next_first,
@@ -254,12 +363,29 @@ def main() -> int:
             args.manifest,
         )
         print(f"帧链已验证：segment {args.segment_index}")
+    else:
+        verify_output_chain(
+            args.previous_video,
+            args.next_video,
+            args.segment_index,
+            args.manifest,
+            args.evidence_dir,
+            args.min_ssim,
+            args.max_mae,
+        )
+        print(f"成片接缝已验证：segment {args.segment_index}")
     return 0
 
 
 if __name__ == "__main__":
     try:
         raise SystemExit(main())
-    except (FileNotFoundError, FileExistsError, ValueError, json.JSONDecodeError) as error:
+    except (
+        FileNotFoundError,
+        FileExistsError,
+        RuntimeError,
+        ValueError,
+        json.JSONDecodeError,
+    ) as error:
         print(f"错误：{error}")
         raise SystemExit(1) from error

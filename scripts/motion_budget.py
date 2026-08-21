@@ -51,6 +51,8 @@ def check_size(size: tuple[int, int], required: tuple[int, int]) -> SizeCheck:
 def resolve_access(args: argparse.Namespace) -> str:
     if args.access != "auto":
         return args.access
+    if args.time_control in {"segment-play", "autonomous"}:
+        return "sequential"
     if args.parameter_space == "linear" and args.driver in {
         "scroll",
         "audio",
@@ -114,11 +116,6 @@ def select_delivery(
 
     return {
         "selected": selected,
-        "runtime": {
-            "alpha-atlas": "css-alpha-atlas",
-            "chroma-video": "webgl-chroma-video",
-            "baked-video": "video-seek",
-        }[selected],
         "reasonCodes": reason_codes,
         "atlasWithinBudget": atlas_within_budget,
         "thresholds": {
@@ -145,6 +142,18 @@ def build_report(args: argparse.Namespace) -> dict[str, object]:
     )
     access = resolve_access(args)
     delivery = select_delivery(args, capacity, sheets, decoded_mib, access)
+    runtime = {
+        "renderer": {
+            "alpha-atlas": "css-alpha-atlas",
+            "chroma-video": "webgl-chroma-video",
+            "baked-video": "baked-video",
+        }[str(delivery["selected"])],
+        "controller": {
+            "scrub": "frame-scrub",
+            "segment-play": "segment-playback",
+            "autonomous": "autonomous-playback",
+        }[args.time_control],
+    }
 
     failures: list[str] = []
     source_check = check_size(args.source, required) if args.source else None
@@ -215,9 +224,11 @@ def build_report(args: argparse.Namespace) -> dict[str, object]:
         "temporalCheck": temporal_check,
         "driver": args.driver,
         "parameterSpace": args.parameter_space,
+        "timeControl": args.time_control,
         "access": access,
         "backgroundOwner": args.background_owner,
         "delivery": delivery,
+        "runtime": runtime,
         "failures": failures,
         "passes": not failures,
     }
@@ -238,9 +249,11 @@ def print_human(report: dict[str, object]) -> None:
     )
     print(f"全部帧解码内存理论值：{report['decodedFrameMemoryMiB']} MiB")
     delivery = report["delivery"]
+    runtime = report["runtime"]
     print(
         f"背景归属：{report['backgroundOwner']}；"
-        f"自动选择：{delivery['selected']}（{delivery['runtime']}）"
+        f"媒体：{delivery['selected']}；"
+        f"控制器：{runtime['controller']}；渲染器：{runtime['renderer']}"
     )
     print("选择依据：" + "、".join(delivery["reasonCodes"]))
 
@@ -288,7 +301,17 @@ def main() -> int:
     )
     parser.add_argument(
         "--driver",
-        choices=("pointer", "scroll", "drag", "touch", "orientation", "audio", "data", "state"),
+        choices=(
+            "pointer",
+            "scroll",
+            "drag",
+            "touch",
+            "orientation",
+            "audio",
+            "data",
+            "state",
+            "time",
+        ),
         default="scroll",
         help="Motion Brief 中的交互驱动，默认 scroll",
     )
@@ -297,6 +320,12 @@ def main() -> int:
         choices=("linear", "circular", "2d", "discrete"),
         default="linear",
         help="Motion Brief 中的参数空间，默认 linear",
+    )
+    parser.add_argument(
+        "--time-control",
+        choices=("scrub", "segment-play", "autonomous"),
+        required=True,
+        help="Concept Contract 中的时间控制方式，必须显式传入",
     )
     parser.add_argument(
         "--access",

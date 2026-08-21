@@ -1,18 +1,19 @@
 #!/usr/bin/env python3
-"""把动作母版编译为可精确寻帧的全关键帧 MP4。
+"""把动作母版编译为可精确控制的全关键帧 MP4。
 
-适合一维连续参数控制的大尺寸动画，支持两种背景归属：
+适合一维连续时间轴的大尺寸动画，支持逐帧、分段和自主播放，以及两种背景归属：
 
-- `--background-owner page`（chroma 路线）：强制插帧并保留均匀色键背景，网页使用
+- `--background-owner page`（chroma 路线）：保留均匀色键背景，网页使用
   WebGL 实时抠色；编译前逐帧模拟同一套 shader 参数，检查主体内部绿块、边缘溢色
   和压缩脏边，并输出多种测试底色上的抠色合成图供验收。
 - `--background-owner video`（baked 路线）：背景与主体在同一视频中烘焙生成，
-  不做任何抠色；视频本身就是最终画面，运行时只做整数帧 seek。
+  不做任何抠色；视频本身就是最终画面。
 """
 
 from __future__ import annotations
 
 import argparse
+import bisect
 import json
 import shutil
 import subprocess
@@ -78,6 +79,142 @@ def video_stream(report: dict[str, Any]) -> dict[str, Any]:
         if stream.get("codec_type") == "video":
             return stream
     raise ValueError("输入文件没有视频流")
+
+
+def parse_rate(value: str | None) -> float | None:
+    if not value or value in {"0/0", "N/A"}:
+        return None
+    if "/" in value:
+        numerator, denominator = value.split("/", 1)
+        denominator_value = float(denominator)
+        return float(numerator) / denominator_value if denominator_value else None
+    return float(value)
+
+
+def parse_segment_specs(values: list[str]) -> list[dict[str, int | str]]:
+    segments: list[dict[str, int | str]] = []
+    identifiers: set[str] = set()
+    for raw in values:
+        try:
+            identifier, frames = raw.split("=", 1)
+            start_text, hold_text, end_text = frames.split(":", 2)
+            start, hold, end_exclusive = (
+                int(start_text),
+                int(hold_text),
+                int(end_text),
+            )
+        except ValueError as error:
+            raise ValueError(
+                "--segment 必须写成 DESTINATION_STATE_ID=START:HOLD:END_EXCLUSIVE"
+            ) from error
+        identifier = identifier.strip()
+        if not identifier or identifier in identifiers:
+            raise ValueError(f"片段 ID 为空或重复：{identifier or raw}")
+        if not 0 <= start <= hold < end_exclusive:
+            raise ValueError(f"片段 {identifier} 必须满足 START <= HOLD < END_EXCLUSIVE")
+        identifiers.add(identifier)
+        segments.append(
+            {
+                "id": identifier,
+                "start": start,
+                "hold": hold,
+                "endExclusive": end_exclusive,
+            }
+        )
+    return segments
+
+
+def build_timeline(
+    specs: list[dict[str, int | str]],
+    kept_source_indices: list[int],
+    raw_count: int,
+    fps: float,
+    curve: dict[str, float | str],
+    initial_state_id: str = "state-0",
+) -> dict[str, Any]:
+    final_count = len(kept_source_indices)
+    if not specs:
+        specs = [
+            {
+                "id": "state-1",
+                "start": 0,
+                "hold": raw_count - 1,
+                "endExclusive": raw_count,
+            }
+        ]
+    initial_state_id = initial_state_id.strip()
+    if not initial_state_id:
+        raise ValueError("--initial-state-id 不能为空")
+    destination_ids = {str(spec["id"]) for spec in specs}
+    if initial_state_id in destination_ids:
+        raise ValueError("初始状态 ID 不能与目标状态 ID 重复")
+    segments: list[dict[str, Any]] = []
+    states: list[dict[str, Any]] = []
+    previous_end = 0
+    previous_state_id = initial_state_id
+    for spec in specs:
+        source_start = int(spec["start"])
+        source_hold = int(spec["hold"])
+        source_end = int(spec["endExclusive"])
+        if source_end > raw_count:
+            raise ValueError(
+                f"片段 {spec['id']} 的 END_EXCLUSIVE 超出源帧数 {raw_count}"
+            )
+        start = bisect.bisect_left(kept_source_indices, source_start)
+        hold = bisect.bisect_right(kept_source_indices, source_hold) - 1
+        end_exclusive = bisect.bisect_left(kept_source_indices, source_end)
+        if not 0 <= start <= hold < end_exclusive <= final_count:
+            raise ValueError(f"片段 {spec['id']} 在清理后没有有效连续帧")
+        if start < previous_end:
+            raise ValueError(f"片段 {spec['id']} 与上一片段重叠")
+        destination_state_id = str(spec["id"])
+        if not states:
+            states.append(
+                {
+                    "id": initial_state_id,
+                    "frame": start,
+                    "hold": start / fps,
+                }
+            )
+        segments.append(
+            {
+                "id": f"{previous_state_id}->{destination_state_id}",
+                "from": previous_state_id,
+                "to": destination_state_id,
+                "sourceFrames": {
+                    "start": source_start,
+                    "hold": source_hold,
+                    "endExclusive": source_end,
+                },
+                "frames": {
+                    "start": start,
+                    "hold": hold,
+                    "endExclusive": end_exclusive,
+                },
+                "start": start / fps,
+                "hold": hold / fps,
+                "endExclusive": end_exclusive / fps,
+                "curve": curve,
+            }
+        )
+        states.append(
+            {
+                "id": destination_state_id,
+                "frame": hold,
+                "hold": hold / fps,
+            }
+        )
+        previous_end = end_exclusive
+        previous_state_id = destination_state_id
+    return {
+        "schemaVersion": 1,
+        "fps": fps,
+        "frameDuration": 1 / fps,
+        "frameCount": final_count,
+        "initialState": initial_state_id,
+        "states": states,
+        "segments": segments,
+    }
 
 
 def dimensions_for_width(
@@ -381,11 +518,11 @@ def load_budget_report(
     return report
 
 
-def require_interpolation_pass(path: Path) -> dict[str, Any]:
+def require_frame_preparation_pass(path: Path) -> dict[str, Any]:
     report = json.loads(path.read_text(encoding="utf-8"))
     verdict = report.get("verdict", {})
     if not verdict.get("passedAutomaticChecks"):
-        raise RuntimeError("插帧自动检查未通过，禁止继续编码视频")
+        raise RuntimeError("帧准备自动检查未通过，禁止继续编码视频")
     return report
 
 
@@ -492,7 +629,7 @@ def compile_motion(args: argparse.Namespace) -> int:
     budget_report = load_budget_report(budget_path, expected_delivery)
     if args.loop and args.end_reference:
         raise ValueError("--loop 与 --end-reference 不能同时使用")
-    if args.fps <= 0:
+    if args.fps is not None and args.fps <= 0:
         raise ValueError("--fps 必须大于 0")
     if args.desktop_width < 2 or args.mobile_width < 2:
         raise ValueError("输出宽度必须至少为 2")
@@ -504,18 +641,39 @@ def compile_motion(args: argparse.Namespace) -> int:
         raise ValueError("--duplicate-threshold 不能小于 0")
     if args.contact_columns < 1:
         raise ValueError("--contact-columns 必须至少为 1")
+    for name, value in (
+        ("--playback-rate", args.playback_rate),
+        ("--edge-rate", args.edge_rate),
+        ("--mid-rate", args.mid_rate),
+    ):
+        if value <= 0:
+            raise ValueError(f"{name} 必须大于 0")
     if args.poster_source_frame < 0:
         raise ValueError("--poster-source-frame 不能小于 0")
     anchor_sources = parse_anchors(args.anchor)
+    segment_specs = parse_segment_specs(args.segment)
     safe_prepare_output(output, args.force)
 
     source_probe = probe(source)
     source_video = video_stream(source_probe)
     source_width = int(source_video["width"])
     source_height = int(source_video["height"])
+    source_fps = (
+        parse_rate(source_video.get("avg_frame_rate"))
+        or parse_rate(source_video.get("r_frame_rate"))
+        or 24.0
+    )
+    if args.frame_policy == "native":
+        if args.fps is not None and abs(args.fps - source_fps) > 0.01:
+            raise ValueError("frame-policy=native 时 --fps 必须省略或等于源帧率")
+        args.fps = source_fps
+    else:
+        args.fps = args.fps or 48.0
+        if args.fps <= source_fps:
+            raise ValueError("frame-policy=interpolate 时 --fps 必须高于源帧率")
 
-    interpolation = output / "interpolation"
-    raw_frames = interpolation / "frames"
+    preparation = output / "frame-preparation"
+    raw_frames = preparation / "frames"
     cleaned_frames = output / "frames" / "final"
     post_encode_frames = output / "post-encode-frames"
     qa = output / "qa"
@@ -523,23 +681,80 @@ def compile_motion(args: argparse.Namespace) -> int:
     qa.mkdir(parents=True, exist_ok=True)
     final.mkdir(parents=True, exist_ok=True)
 
-    run(
-        [
-            sys.executable,
-            str(OPTIMIZE),
-            "interpolate",
-            str(source),
-            str(interpolation),
-            "--fps",
-            str(args.fps),
-            "--key",
-            "none",
-        ]
-    )
-    interpolation_report_path = interpolation / "interpolation-report.json"
-    interpolation_report = require_interpolation_pass(
-        interpolation_report_path
-    )
+    if args.frame_policy == "interpolate":
+        run(
+            [
+                sys.executable,
+                str(OPTIMIZE),
+                "interpolate",
+                str(source),
+                str(preparation),
+                "--fps",
+                str(args.fps),
+                "--key",
+                "none",
+            ]
+        )
+        frame_report_path = preparation / "interpolation-report.json"
+    else:
+        run(
+            [
+                sys.executable,
+                str(PIPELINE),
+                "extract",
+                str(source),
+                str(raw_frames),
+                "--fps",
+                str(args.fps),
+                "--key",
+                "none",
+            ]
+        )
+        native_qa = preparation / "qa"
+        native_qa.mkdir(parents=True, exist_ok=True)
+        analysis_path = native_qa / "analysis-native.json"
+        run(
+            [
+                sys.executable,
+                str(PIPELINE),
+                "analyze",
+                str(raw_frames),
+                "--output",
+                str(analysis_path),
+            ]
+        )
+        run(
+            [
+                sys.executable,
+                str(PIPELINE),
+                "contact",
+                str(raw_frames),
+                "--output",
+                str(native_qa / "contact-sheet-native.jpg"),
+                "--columns",
+                str(args.contact_columns),
+            ]
+        )
+        frame_report_path = preparation / "frame-preparation-report.json"
+        frame_report_path.write_text(
+            json.dumps(
+                {
+                    "type": "motion-frame-preparation-report",
+                    "policy": "native",
+                    "sourceFps": source_fps,
+                    "targetFps": args.fps,
+                    "analysis": str(analysis_path),
+                    "verdict": {
+                        "passedAutomaticChecks": True,
+                        "manualReviewRequired": True,
+                    },
+                },
+                ensure_ascii=False,
+                indent=2,
+            ),
+            encoding="utf-8",
+        )
+    frame_report = require_frame_preparation_pass(frame_report_path)
     raw_count = len(image_frames(raw_frames))
     if raw_count < 3:
         raise RuntimeError("母版切帧后少于 3 帧")
@@ -583,7 +798,7 @@ def compile_motion(args: argparse.Namespace) -> int:
     else:
         final_frames = raw_frames
         kept_source_indices = list(range(raw_count))
-        print("提示：未传 --loop 或 --end-reference，使用全部插帧", flush=True)
+        print("提示：未传 --loop 或 --end-reference，使用全部准备帧", flush=True)
 
     final_frame_paths = image_frames(final_frames)
     if not final_frame_paths:
@@ -602,6 +817,26 @@ def compile_motion(args: argparse.Namespace) -> int:
         args.poster_source_frame,
         kept_source_indices,
     )
+    curve = (
+        {"type": "constant", "rate": args.playback_rate}
+        if args.playback_curve == "constant"
+        else {
+            "type": "edge-mid-edge",
+            "edgeRate": args.edge_rate,
+            "midRate": args.mid_rate,
+        }
+    )
+    timeline = build_timeline(
+        segment_specs,
+        kept_source_indices,
+        raw_count,
+        args.fps,
+        curve,
+        args.initial_state_id,
+    )
+    timeline_path = Path(args.timeline_output).expanduser().resolve()
+    if timeline_path.exists() and not args.force:
+        raise FileExistsError(f"时间轴已存在：{timeline_path}；确认后使用 --force")
     source_key_color: str | None = None
     source_key_validation: dict[str, object] | None = None
     if background_owner == "page":
@@ -742,6 +977,7 @@ def compile_motion(args: argparse.Namespace) -> int:
         },
         "compile": {
             "backgroundOwner": background_owner,
+            "framePolicy": args.frame_policy,
             "sourceKeyColor": source_key_color,
             "runtimeKeyColor": runtime_key_color,
             "sourceKeyValidation": source_key_validation,
@@ -759,10 +995,11 @@ def compile_motion(args: argparse.Namespace) -> int:
             ),
             "duplicateThreshold": args.duplicate_threshold,
             "seamWindow": args.seam_window,
-            "interpolationReport": str(interpolation_report_path),
-            "interpolationVerdict": interpolation_report["verdict"],
+            "framePreparationReport": str(frame_report_path),
+            "framePreparationVerdict": frame_report["verdict"],
             "budgetReport": str(budget_path),
             "selection": budget_report["delivery"],
+            "timeline": str(timeline_path),
             "postEncodeKeyingReport": (
                 str(post_encode_qa_path) if post_encode_qa_path else None
             ),
@@ -786,6 +1023,7 @@ def compile_motion(args: argparse.Namespace) -> int:
                 ),
                 "desktop": f"final/motion-{asset_kind}-desktop.mp4",
                 "mobile": f"final/motion-{asset_kind}-mobile.mp4",
+                "timeline": str(timeline_path),
             },
         },
         "outputs": {
@@ -817,6 +1055,10 @@ def compile_motion(args: argparse.Namespace) -> int:
             },
         },
     }
+    timeline_path.parent.mkdir(parents=True, exist_ok=True)
+    timeline_path.write_text(
+        json.dumps(timeline, ensure_ascii=False, indent=2), encoding="utf-8"
+    )
     manifest_path = output / "compile.json"
     manifest_path.write_text(
         json.dumps(manifest, ensure_ascii=False, indent=2),
@@ -838,7 +1080,7 @@ def compile_motion(args: argparse.Namespace) -> int:
 def parser() -> argparse.ArgumentParser:
     result = argparse.ArgumentParser(
         description=(
-            "把动作母版插帧并编译为桌面与移动端全关键帧视频；"
+            "按帧策略准备动作母版，并编译为桌面与移动端全关键帧视频；"
             "chroma 路线供 WebGL 实时抠色，baked 路线直接呈现烘焙场景"
         )
     )
@@ -867,7 +1109,42 @@ def parser() -> argparse.ArgumentParser:
     mode = result.add_mutually_exclusive_group()
     mode.add_argument("--loop", action="store_true", help="按闭环首帧裁掉尾部停顿")
     mode.add_argument("--end-reference", help="单向转场目标尾帧，用于裁掉尾部停顿")
-    result.add_argument("--fps", type=float, default=48)
+    result.add_argument(
+        "--frame-policy",
+        choices=("native", "interpolate"),
+        required=True,
+        help="native 保留源帧；interpolate 补到更高目标帧率",
+    )
+    result.add_argument(
+        "--fps",
+        type=float,
+        help="目标帧率；native 默认源帧率，interpolate 默认 48",
+    )
+    result.add_argument(
+        "--timeline-output",
+        required=True,
+        help="编译生成的时间轴 JSON 路径，例如 build/timeline.json",
+    )
+    result.add_argument(
+        "--segment",
+        action="append",
+        default=[],
+        metavar="DESTINATION_STATE_ID=START:HOLD:END_EXCLUSIVE",
+        help="按目标状态 ID 和帧准备后的源帧索引定义片段；可重复传入",
+    )
+    result.add_argument(
+        "--initial-state-id",
+        default="state-0",
+        help="时间轴初始状态的稳定 ID，默认 state-0",
+    )
+    result.add_argument(
+        "--playback-curve",
+        choices=("constant", "edge-mid-edge"),
+        default="constant",
+    )
+    result.add_argument("--playback-rate", type=float, default=1.0)
+    result.add_argument("--edge-rate", type=float, default=1.6)
+    result.add_argument("--mid-rate", type=float, default=1.0)
     result.add_argument(
         "--desktop-width",
         type=int,
@@ -906,7 +1183,7 @@ def parser() -> argparse.ArgumentParser:
     result.add_argument(
         "--keep-frames",
         action="store_true",
-        help="保留插帧和清理帧用于调试；默认成功后删除中间 PNG",
+        help="保留帧准备和清理帧用于调试；默认成功后删除中间 PNG",
     )
     result.add_argument("--force", action="store_true")
     return result

@@ -10,6 +10,18 @@
 首尾帧准备。视频提示词只描述两张已验收关键帧之间如何连续变化，不再承担终点设计；
 主体身份、产品结构、Logo、构图和风格必须先在关键帧图片中解决。
 
+`background_owner=page` 时，关键帧图片使用内置 `$imagegen` 直接生成真实透明背景 PNG，
+保留原始 Alpha；不要让生图模型生成绿色、品红、灰色、白色或棋盘格背景。提交视频前，
+再从透明源确定性合成视频模型需要的均匀色键副本：
+
+```bash
+python3 "$OIL_MOTION/scripts/composite_alpha_keyframe.py" \
+  source/K0-alpha.png source/K0-video.png \
+  --key-color '#00FF00'
+```
+
+透明源与视频输入副本必须分开保存。主体含大量绿色时，合成副本改用 `#FF00FF`。
+
 需要同一主体从轨道一端精确移动到另一端时，可以先准备透明主体层，用程序生成身份和尺寸
 完全一致的首尾帧，再交给视频模型补全中间形变：
 
@@ -28,22 +40,21 @@ python3 "$OIL_MOTION/scripts/compose_travel_frames.py" subject.png \
 ## 写提示词前先决定
 
 提示词从 Concept Contract 和 Identity Bible 出发，不得加入用户未确认的主体、人数、
-风格或叙事形式。用户要“单人动漫格斗胜利演武”，提示词就只能写这一个角色、这一种
-风格；不得扩写成双人、写实或拆招教学。
+风格、情绪或叙事形式；合同中的限制必须原样成为提示词约束。
 
 先写清楚：
 
-1. 哪个连续参数控制动画。
-2. 参数的起点、终点和方向。
+1. `time_control` 是逐帧 scrub、分段播放还是自主播放。
+2. 时间轴或状态转场的起点、终点和方向。
 3. 主体哪些部分允许变化，哪些必须固定（角色照抄 Identity Bible 的身份锚点）。
 4. 是否闭环。
 5. 背景归属：`background_owner=video` 时写明场景、环境光、地面接触和景深如何保持
-   连续；`background_owner=page` 时写明使用绿色还是洋红色键，以及如何保证四角与
-   时间维度均匀。
+   连续；`background_owner=page` 时写明关键帧生图使用真实 Alpha、视频输入副本使用
+   绿色还是洋红色键，以及如何保证视频四角与时间维度均匀。
 6. 最终会按时间、角度、二维位置还是状态取帧。
 
-生成模型负责动作语义和画面连续性，不负责精确切帧、透明通道、帧编号、压缩或图集。
-提示词不要要求模型输出透明通道、帧编号、图集或精确压缩；这些由程序完成。
+图片模型负责关键帧并直接输出透明通道；视频模型负责动作语义和画面连续性，不负责精确
+切帧、Alpha 视频、帧编号、压缩或图集。不要让视频提示词承担透明通道或图集输出。
 
 ## 提交视频任务（video_job.py）
 
@@ -68,7 +79,7 @@ python3 "$OIL_MOTION/scripts/compose_travel_frames.py" subject.png \
   再按目标尾帧清理，不能假设请求值就是成片值。
 - 模型或接口拒绝参数时停止并报告具体响应；只有用户同意降级后，才能移除约束或更换
   模型，不要静默删掉首尾帧。
-- 一条视频只承担一个连续参数；单变量动作默认 3–6 秒，长序列更容易漂移。
+- 一条视频只承担一条连续时间轴或一个状态转场；单段动作默认 3–6 秒，长序列更容易漂移。
 - `--stage` 必填：第一段为 `pilot`，后续生产段为 `production` 并传
   `--pilot-approval`；连续叙事的生产段同时传 `--continuity-mode chain`、
   `--previous-tail` 和 `--frame-chain-manifest`。Pilot 批准与帧链校验的规则、
@@ -159,10 +170,11 @@ background replacement, and no transparency.
 多段叙事时，这一段在每条提示词中原样复用，并把上一段验收后的实际尾帧作为下一段
 首帧输入。
 
-## 绿幕段（仅 chroma 路线）
+## 视频色键段（仅 chroma 路线）
 
-仅当 Concept Contract 锁定 `background_owner: page` 时使用。默认 `#00FF00`，主体含
-绿色时改用 `#FF00FF`。
+仅当 Concept Contract 锁定 `background_owner: page` 时追加到视频提示词。首尾关键帧
+先由 `$imagegen` 直接生成透明 PNG，再由 `composite_alpha_keyframe.py` 合成为下方视频
+输入；不要把这段用于图片生图提示词。默认 `#00FF00`，主体含绿色时改用 `#FF00FF`。
 
 ```text
 The entire background is one perfectly uniform flat chroma-key <KEY_COLOR>
@@ -267,7 +279,7 @@ that target and settle naturally. No entrance or exit motion.
 
 二维网格至少覆盖左上、上、右上、左、中、右、左下、下、右下。用程序统一锚点和尺寸，再做双线性邻域选择或插值。不要要求模型在一条视频中遍历网格后直接随机访问。
 
-## 滚动时间轴动画
+## 逐帧 scrub 时间轴
 
 适合产品拆解、页面叙事、图表展开和场景变换：
 
@@ -285,7 +297,22 @@ the composition readable when playback is stopped on any frame.
 动作、后段只保留近重复帧。百分比用于约束节奏，不要求模型输出精确帧编号；实际节奏
 仍需通过接触表检查，必要时裁剪或重定时。
 
-滚动序列不一定需要 24–60 FPS。优先生成清晰的语义关键阶段，再由程序决定抽帧密度。
+scrub 序列的目标帧率由帧密度和画质验收决定。优先生成清晰的语义关键阶段，再按
+[optimization.md](optimization.md) 选择保留原帧或插帧。
+
+## 分段播放转场
+
+适合输入触发后按时间完成、并在状态锚点停住的片段：
+
+```text
+Create one uninterrupted transition from the exact provided first frame to the
+exact provided last frame. Begin the intended motion immediately, preserve all
+identity, structure, framing, background, and lighting constraints throughout,
+and reach the final state only at the end. No cut, dissolve, unrelated idle
+motion, early completion, long final hold, or return motion.
+```
+
+每段只描述一个方向的主要变化。运行时反向通常复用同一段；只有倒放违反物理或叙事规律时，才另外生成反向片段。
 
 ## 离散状态动画
 
@@ -344,5 +371,5 @@ text, watermark, border, or style change.
 
 - 先生成 3–6 秒的单变量动作，长序列更容易漂移。
 - 以最终显示尺寸的 2 倍为最低母版分辨率。
-- 生成模型只负责连续动作母版；母版通过内容验收后统一程序插帧，默认目标为 48 FPS。
+- 生成模型只负责连续动作母版；是否插帧由 Motion Brief 的 `frame_policy` 决定。
   提示词不要要求模型自行提高帧率。

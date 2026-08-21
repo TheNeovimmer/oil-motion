@@ -6,7 +6,7 @@
 
 - 预算与路线选择：[delivery-selection.md](delivery-selection.md)
 - 首尾帧模式、提示词与提交命令：[prompting.md](prompting.md)
-- 插帧与图集压缩：[optimization.md](optimization.md)
+- 帧策略与图集压缩：[optimization.md](optimization.md)
 - 母版验收、抠图验收、Pilot 与帧链硬门：[qa.md](qa.md)
 - 运行时映射与验收矩阵：[runtime.md](runtime.md)、[qa.md](qa.md)
 
@@ -41,8 +41,8 @@ motion-name/
 
 按 SKILL.md 主流程依次执行：预算（[delivery-selection.md](delivery-selection.md)）→
 关键帧与提示词（[prompting.md](prompting.md)）→ Pilot 硬门（[qa.md](qa.md)）→ 提交
-与母版验收（[prompting.md](prompting.md)、[qa.md](qa.md)）→ 插帧
-（[optimization.md](optimization.md)，图集路线传 `--key auto` 在插帧时抠成 Alpha）。
+与母版验收（[prompting.md](prompting.md)、[qa.md](qa.md)）→ 帧准备
+（[optimization.md](optimization.md)，需要色键输入时在该阶段离线生成 Alpha 帧）。
 任一环节失败即停止，不要进入下面的打包步骤。
 
 ## 2. 闭环清理与可选稳定
@@ -51,9 +51,9 @@ motion-name/
 
 ```bash
 python3 "$OIL_MOTION/scripts/loop_cleanup.py" \
-  build/interpolated/frames frames/clean \
-  --seam-window 24 \
-  --duplicate-threshold 0.003 \
+  "$PREPARED_FRAMES" frames/clean \
+  --seam-window "$SEAM_WINDOW" \
+  --duplicate-threshold "$DUPLICATE_THRESHOLD" \
   --report qa/loop-cleanup.json
 ```
 
@@ -70,7 +70,7 @@ python3 "$OIL_MOTION/scripts/motion_pipeline.py" normalize \
   --max-scale-change 0.08
 ```
 
-不需要闭环清理或稳定时，将合格的插帧序列复制到 `frames/final`。自由运动、镜头运动和真实透视变化禁止稳定。
+不需要闭环清理或稳定时，将合格的帧准备结果作为 `frames/final`。自由运动、镜头运动和真实透视变化禁止稳定。
 
 ## 3. 最终门槛与图集打包
 

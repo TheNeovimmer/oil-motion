@@ -1,49 +1,51 @@
-# 烘焙场景视频交互路线
+# 烘焙视频路线
 
-仅当 Concept Contract 锁定 `background_owner: video` 且 `motion_budget.py` 返回
-`delivery.selected=baked-video` 时读取本流程。它是默认的场景路线：镜头运动、环境光、
-地面接触、景深、背景连续性重要，或主体不需要脱离背景复用时使用。
-
-视频本身就是最终画面：背景与主体在同一视频中烘焙生成，不做任何抠色，不使用 WebGL
-色键着色器，页面只提供容器。换背景意味着重新生成视频，不要试图从烘焙视频里抠主体。
+仅当 `background_owner: video` 且预算返回 `delivery.selected=baked-video` 时读取。视频包含完整画面；不做抠色、色键或页面背景合成。
 
 ## 编译
 
-先按 [delivery-selection.md](delivery-selection.md) 运行预算并保存
-`--background-owner video` 的报告，再编译已通过内容验收的场景母版：
+先完成内容验收和预算，再运行：
 
 ```bash
 python3 "$OIL_MOTION/scripts/compile_scroll_video.py" \
-  source/master.mp4 build/baked-video \
+  "$SOURCE_VIDEO" "$OUTPUT_DIRECTORY" \
   --background-owner video \
   --budget-report build/motion-budget.json \
-  --fps 48 \
-  --desktop-width 1920 \
-  --mobile-width 1280
+  --frame-policy "$FRAME_POLICY" \
+  --fps "$TARGET_FPS" \
+  --timeline-output build/timeline.json \
+  --desktop-width "$DESKTOP_WIDTH" \
+  --mobile-width "$MOBILE_WIDTH"
 ```
 
-脚本会：
+`FRAME_POLICY` 与 `TARGET_FPS` 来自 Motion Brief。使用 `native` 时目标帧率等于源帧率；使用 `interpolate` 时目标帧率必须更高。
 
-1. 强制插帧到 48 FPS，保留完整场景画面。
-2. 输出原始与插帧接触表和插帧报告。
-3. 按需清理闭环接缝或尾部停顿。
-4. 编码桌面端和移动端全关键帧 MP4，移除音轨。
-5. 生成静态降级图 `poster.png`（普通首帧，不带 Alpha）和 `compile.json`。
+编译器会：
 
-成功后默认删除可重新生成的中间 PNG。只有定位插帧或编码问题时才传 `--keep-frames`。
+1. 按帧策略保留原始帧或插帧，并输出对应接触表和报告。
+2. 按需清理闭环接缝或尾部重复帧。
+3. 编码桌面端和移动端全关键帧 MP4，移除音轨。
+4. 生成普通 `poster.png` 与 `compile.json`。
 
-## 多段场景连续
+多段时间轴用 `--initial-state-id` 指定初始状态，并用重复的 `--segment DESTINATION_STATE_ID=START:HOLD:END_EXCLUSIVE` 传入后续状态与帧边界；需要统一播放曲线时使用 `--playback-curve` 及对应速率参数。编译器负责生成状态映射并把最终保留帧换算成时间。
 
-多段叙事按 [qa.md](qa.md) 的“连续帧链”执行实际尾帧接力、SHA-256 校验和误差累积
-处理。此外，场景设定（地点、时间、光向、地面材质、景深）写进 Concept Contract 的
-`scene` 锚点，每段提示词原样复用（见 [prompting.md](prompting.md) 的场景背景段）。
+成功后默认删除可重新生成的中间 PNG；只有诊断帧准备、裁剪或编码问题时才使用 `--keep-frames`。
+
+## 多段连续
+
+`clip_continuity=chain` 时，按 [qa.md](qa.md) 同时执行：
+
+- 上一段实际尾帧作为下一段生成输入；
+- 相邻成片解码后的尾帧与首帧接缝验收；
+- 身份、构图、光线和背景偏差累积检查。
+
+合并后从最终成片生成 `timeline.json`，不手工抄写段落时间。
+
+“分段”只属于生产过程。交付前必须把连续链编译为每个设备版本各自的一条主视频；运行时不得把生产片段逐段设为 `src`。
 
 ## 网页接入
 
-- `assets/interactive-motion.ts`：把滚动、拖拽等输入映射为整数目标帧，并处理阻尼
-  与限速（用法见 [runtime.md](runtime.md)）。
-- 渲染侧把整数帧换算成 `video.currentTime`，等待 seek 完成后直接把视频绘制到
-  Canvas 或让视频元素本身显示。没有色键、没有 Alpha、没有背景合成层。
+页面只保留一个持续存在的视频元素：
 
 ```html
 <section class="motion-stage">
@@ -56,21 +58,26 @@ python3 "$OIL_MOTION/scripts/compile_scroll_video.py" \
 .motion-video { width: 100%; height: 100%; object-fit: cover; display: block; }
 ```
 
-视频就是完整画面，不需要页面背景兜底；容器之外的页面背景与视频无关。
+根据预算中的 `runtime.controller` 接入 [runtime.md](runtime.md)：
 
-## 加载和降级
+- `frame-scrub`：整数帧映射到 `currentTime`。
+- `segment-playback`：读取 `timeline.json` 分段播放、反向和精确停帧。
+- `autonomous-playback`：按时间播放，仅在素材通过闭环验收时循环。
 
-共享的预加载、seek 和离屏策略按 [runtime.md](runtime.md) 执行。baked 路线专属：
+控制器变化不改变视频背景归属，也不需要重新选择媒体格式。
 
-- 预加载静态降级图 `poster.png`，视频解码或资源加载失败时显示它。
-- `prefers-reduced-motion` 直接显示最能表达内容的静态帧。
+桌面与移动资源只在会话初始化时选择。分页、反向和普通 resize 期间不换 `src`；确需切换设备版本时，执行一次受控重载并恢复到当前状态的 `hold`，不能把换源当作页面转场。
+
+## 加载与降级
+
+- 预加载 `poster.png` 和首个需要的视频资源。
+- 视频解码或资源加载失败时显示 `poster.png`。
+- `prefers-reduced-motion` 显示合同指定的静态状态。
 
 ## 验收
 
-- 完整观看桌面与移动输出：场景、环境光、地面接触、景深和背景连续性在全序列一致。
-- 多段拼接处没有背景跳变、光线突变或身份漂移。
-- `compile.json` 中桌面与移动输出的 `allFramesAreKeyframes` 必须为 `true`。
-- 记录常规 seek 和快速反向 seek 延迟；若目标设备明显掉帧，先降低输出分辨率到实际
-  CSS 尺寸乘 DPR，不能降低语义帧密度来掩盖问题。
-- 确认运行时不存在任何抠色、色键着色器或阈值调参；出现绿边或内部绿块说明素材混入
-  了 chroma 母版，回到 Concept Contract 检查背景归属。
+- 完整观看桌面与移动输出，确认主体、背景、光线、接触关系和镜头连续。
+- 多段输出接缝通过 [qa.md](qa.md) 的成片连续性硬门。
+- `compile.json` 中桌面与移动输出的 `allFramesAreKeyframes` 为 `true`。
+- 实际页面没有抠色、色键 Shader 或阈值配置。
+- 按选中的控制器验收 seek、分段播放或自动播放，不混用验收标准。

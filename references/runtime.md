@@ -1,153 +1,152 @@
-# 运行时选择与交互映射
+# 运行时控制
 
-本文档是输入映射、阻尼、预加载和性能的唯一事实源。路线选择规则与预算命令见
-[delivery-selection.md](delivery-selection.md)；路线专属的编译和接入见
-[chroma-video.md](chroma-video.md)、[baked-video.md](baked-video.md) 与
-[minimax-spritesheet.md](minimax-spritesheet.md)。
+本文档是时间控制、输入映射、预加载和运行时性能的唯一事实源。媒体格式由
+[delivery-selection.md](delivery-selection.md) 决定；两者独立。
 
-## 先执行自动选择
+## 先读预算结果
 
-先按 Concept Contract 的 `background_owner` 运行 `motion_budget.py`（见
-[delivery-selection.md](delivery-selection.md)），实现 `delivery.selected` 返回的
-路线。格式由 Agent 自动决定，不询问用户；三条路线都不能退回 `<video autoplay>`。
+`build/motion-budget.json` 必须分别给出：
 
-图集文件体积小不代表解码内存小。RGBA 解码内存约为 `宽 × 高 × 4`。3840×3600 图集约需
-52.7 MiB，因此必须按真实显示尺寸和目标设备预算。
+- `delivery.selected`：使用哪种媒体和渲染器。
+- `runtime.controller`：输入如何控制媒体时间。
 
-## 图集约束
+| `time_control` | `runtime.controller` | 行为 |
+|---|---|---|
+| `scrub` | `frame-scrub` | 输入值持续映射到帧或时间 |
+| `segment-play` | `segment-playback` | 输入选择相邻状态，片段按时间播放 |
+| `autonomous` | `autonomous-playback` | 媒体时间自行推进 |
 
-- 单元格尺寸统一，所有帧使用同一主体锚点。
-- 单元格宽高至少为最终 CSS 宽高乘以目标 DPR；禁止依赖浏览器把低分辨率单帧放大。
-- 默认单张图集宽高不超过 4096；超出时让自动选择切换到视频。二维参数不能切成线性
-  视频，必须降低采样或拆状态后重新预算。
-- 使用清单保存帧数、列数、行数、单元格尺寸、静止帧和参数映射。
-- CSS `background-size` 为 `columns × 100%` 和 `rows × 100%`。
-- 切换帧只更新 `background-position`，不要创建多个透明图片层。
+不要根据 `scroll`、分页布局或视频格式猜控制器。滚动既可以 scrub，也可以触发片段播放。
 
-```css
-.motion-sprite {
-  width: 240px;
-  aspect-ratio: 1;
-  background-image: url("./motion.webp");
-  background-repeat: no-repeat;
-  background-size: 1600% 1500%;
-  will-change: background-position;
-}
+## 时间轴清单
+
+所有控制器只读取编译生成的 `build/timeline.json`，页面中不得维护第二份时间常量。
+
+```yaml
+schemaVersion: 1
+fps: <实际编码帧率>
+frameDuration: <1 / fps>
+initialState: <稳定状态 ID>
+states:
+  - id: <页面与运行时共同使用的状态 ID>
+    hold: <该状态的停帧时间>
+segments:
+  - id: <稳定标识>
+    from: <起点状态 ID>
+    to: <终点状态 ID>
+    start: <本段第一张可见帧的时间，包含>
+    hold: <本段结束后应停留的最后可见帧时间>
+    endExclusive: <本段编码边界，不包含>
+    curve:
+      type: constant | edge-mid-edge
+      rate: <constant 使用>
+      edgeRate: <edge-mid-edge 使用>
+      midRate: <edge-mid-edge 使用>
 ```
 
-## 视频路线约束
+硬性语义：
 
-- 只用于一维时间参数。chroma 路线优先用于 `linear` 顺序访问；环形或一维随机访问
-  只有在图集超预算时才使用，并增加 seek 延迟验收；二维输入不使用视频。baked 路线
-  遇到二维或离散输入时拆成多条独立片段分别预算。
-- 使用全关键帧 MP4，让整数帧 `currentTime` seek 的正反向延迟更稳定。
-- 视频尺寸至少覆盖最大实际 CSS 尺寸乘目标 DPR，同时不得超过母版分辨率。
-- chroma 路线保留均匀绿幕，由 `chroma-video-renderer.ts` 绘制为透明 Canvas，页面
-  背景、文字和其他视觉层位于 Canvas 外部；baked 路线直接绘制完整画面，不做任何
-  抠色、色键着色器或阈值调参。
-- WebGL 或视频失败时回退静态 Alpha 首帧，不得显示原始绿幕。
-- 运行时从 `compile.json.runtime` 读取帧数、帧率、语义锚点和完整 `keying` 参数；不得在页面中维护第二份常量。
-- `chroma-video-renderer.ts` 的 `dominance-v2` 必须与编译器编码后 QA 同步更新。只改 Shader 或只改 Python 都视为契约破坏。
+- `start <= hold < endExclusive`。
+- 停止播放时只能落在 `hold`，不能落在 `endExclusive`。
+- `states` 顺序必须与片段的 `from → to` 一致；页面状态直接使用这些 ID，不另建索引映射表。
+- 所有时间都来自最终编码后的实际帧，不从生成时长或原始素材手工推算。
+- 裁剪、拼接或重新编码后必须重新生成清单。
 
-完整编译和验收规则见 [chroma-video.md](chroma-video.md)。
+## frame-scrub
 
-## 一维时间参数
+适用于“输入停在哪里，画面就停在哪里”的交互。使用
+[assets/interactive-motion.ts](../assets/interactive-motion.ts) 的
+`createFrameAnimator` 管理目标帧、阻尼和反向。
+
+一维映射：
 
 ```text
-progress = clamp((scrollY - start) / (end - start), 0, 1)
+progress = clamp((value - start) / (end - start), 0, 1)
 targetFrame = progress * (frameCount - 1)
 ```
 
-滚动监听只记录目标值，在 `requestAnimationFrame` 中更新。页面布局变化时重新计算起止位置。
+环形输入使用最短环形距离；二维输入使用二维采样网格，不能压成一维进度。输入事件只更新目标值，实际渲染集中在 `requestAnimationFrame`。
 
-## 环形方向参数
+视频 scrub 每次只提交最新整数目标帧，丢弃过时 seek。需要随机访问或快速反向时使用全关键帧视频，并验收 seek 延迟。
 
-```text
-angle = atan2(pointerY - anchorY, pointerX - anchorX)
-normalized = mod(angle - startAngle, 2π) / 2π
-targetFrame = normalized * frameCount
-```
+## segment-playback
 
-当前帧追踪目标帧时使用最短环形距离：
+适用于“输入选择下一状态，动作随后自行完成”的交互。使用
+[assets/interactive-motion.ts](../assets/interactive-motion.ts) 的
+`createSegmentPlayer`，不要在页面重新实现播放状态机。
 
-```text
-delta = wrap(target) - wrap(current)
-if delta > frameCount / 2: delta -= frameCount
-if delta < -frameCount / 2: delta += frameCount
-```
+必须满足：
 
-闭环素材必须检查最后一帧到第一帧的连接。若生成视频本身不是闭环，不要在运行时强行 wrap。
+1. 生产时可以分段生成，但连续链交付前必须合并；运行时使用一个持续存在的媒体实例，切换状态不替换 `src`、视频节点或图片层。
+2. 输入一发生就启动媒体；页面导航或其他几何动画可以并行，不等待动作结束。
+3. 反向输入先取消当前播放，再从当前 `currentTime` 向上一状态撤回。
+4. 前进可以使用用户输入触发的 `video.play()`。反向不能依赖浏览器支持负 `playbackRate`，由共享控制器按时间轴回放。
+5. 使用 `requestVideoFrameCallback`，无支持时回退 `requestAnimationFrame`；不得用低频 `timeupdate` 判断停帧。
+6. 接近目标时先暂停，再精确设到 `hold`，避免越过目标后回跳。
+7. 播放速率曲线属于时间轴清单。需要两端快、中间慢时使用 `edge-mid-edge`；正放与倒放读取同一曲线。
+8. 快速连续输入只保留最新目标，旧任务必须可取消。
 
-## 二维参数
+桌面与移动媒体版本在初始化时选择。普通 resize 不换源；确需重载另一版本时，恢复到当前状态的 `hold` 后再继续。
 
-二维网格的离散索引：
+分页导航只负责选择目标状态 ID。它不能把分段时间轴改成多个互不相关的视频，也不能用页面切换遮盖媒体接缝。
 
-```text
-column = round(clamp(x, 0, 1) * (columns - 1))
-row = round(clamp(y, 0, 1) * (rows - 1))
-frame = row * columns + column
-```
+### 分步手势策略
 
-二维输入默认选择最近邻帧并用输入阻尼降低抖动。不要透明叠加相邻图片，避免产生虚影。
+`segment-playback` 与分页导航组合时，必须从 Motion Brief 读取 `gesture_policy`：
 
-## 阻尼与速度
+- `one-gesture-one-step`：把同一次滚轮或触控板惯性序列合并成一个方向意图，不能按每个原始事件连续跳状态。
+- `while_active`：明确新输入是重定向、排队还是忽略；默认需要可反向的交互使用 `retarget`。
+- `boundary`：首尾状态执行 `clamp` 或合同明确的 `loop`，不能越界创建空状态。
+- `programmatic_navigation=ignore`：页面自身的平滑滚动和位置校正不得再次触发媒体状态变化。
+- 页面元素的状态 ID 必须直接匹配 `timeline.json.states[].id`；找不到、重复或顺序不一致时在初始化阶段失败。
 
-`lerp` 在帧率变化和频繁反向时容易出现粘滞。优先使用带速度状态和最大速度的 `smoothDamp`：
+从 [assets/step-gesture.ts](../assets/step-gesture.ts) 的 `createStepGestureAdapter` 开始实现。滚轮、触控板或触摸层只把方向增量送入该适配器；手势阈值、惯性结束判定和程序化导航锁不得在页面监听、媒体控制器和分页组件中各写一份。
 
-- `smoothTime` 控制追踪延迟。
-- `maxSpeed` 限制不自然的快速扭动。
-- 每次反向保留速度状态，避免机械停顿。
-- `deltaTime` 设置上限，标签页恢复时避免巨幅跳帧。
+## autonomous-playback
 
-默认从下面范围开始，再按动作尺度调整：
+适用于待机、循环或进入可见区域后自行播放的动画。浏览器允许时使用 `muted playsinline`；需要声音或浏览器阻止自动播放时，等待明确用户手势。循环只在素材本身通过首尾接缝验收时启用。
 
-```text
-smoothTime: 0.08–0.16 秒
-maxSpeed: 每秒总帧数的 1.5–2.5 倍
-deltaTime cap: 1/30 秒
-```
+## 渲染器
 
-## 初始和失去输入
+### Alpha 图集
 
-- 初始显示 `rest_state`，不要从透明度交叉渐变到目标帧。
-- 第一次输入从当前帧平滑追踪，不要瞬间跳到目标。
-- 输入停止时可以保持当前位置、缓慢回到静止帧，或执行单独的待机片段；由 Motion
-  Brief 决定。
+- 单元格尺寸统一，并至少覆盖最大 CSS 尺寸乘目标 DPR。
+- 清单保存帧数、行列、单元格尺寸和参数映射。
+- 切帧只更新 `background-position`，不创建多张透明图片交叉淡化。
+- 默认单张纹理不超过 4096；超预算回到自动路线选择。
 
-## 指针、滚动和布局
+### Chroma 视频
 
-- `pointermove` 记录最近屏幕坐标。
-- `scroll`、`resize` 和容器尺寸变化后，用相同屏幕坐标重新计算相对主体的位置。
-- 主体锚点来自当前 `getBoundingClientRect()`，不要永久缓存。
-- 主体不在视口时暂停循环和昂贵计算。
-- 使用 `IntersectionObserver` 控制活动状态，`ResizeObserver` 更新布局。
+- 视频保留均匀色键，由 `chroma-video-renderer.ts` 绘制透明 Canvas。
+- 页面背景、文字和其他视觉层位于 Canvas 外部。
+- 运行时从 `compile.json.runtime.keying` 读取全部参数，不在页面另写阈值。
+- WebGL 或视频失败时显示静态 Alpha 降级图，不能露出色键母版。
 
-## 手机陀螺仪
+### Baked 视频
 
-1. 由用户手势请求权限。
-2. 记录首次 `beta/gamma` 作为中性姿态。
-3. 根据屏幕方向旋转输入轴。
-4. 限制异常值并轻微平滑。
-5. 不默认设置大死区；传感器噪声用阻尼和小阈值处理。
-6. 权限拒绝时使用触摸或静态帧。
+- 视频本身包含完整画面，不做抠色、色键或背景合成。
+- 可由视频元素直接显示，也可绘制到 Canvas。
+- 失败时显示普通 `poster.png`。
 
-## 预加载与 seek 策略
+## 输入、布局与生命周期
 
-- 图集路线使用 `<link rel="preload" as="image">`，预加载清单、静态首帧和图集，并用
-  `Image.decode()` 确认可绘制。
-- 视频路线预加载静态降级首帧、视频元数据和首段媒体；`loadedmetadata` 后才能计算帧
-  时长并允许 seek。
-- 每次只提交最新整数目标帧，丢弃过时 seek；视频离屏时停止 seek 和绘制，重新进入
-  视口后跳到最新目标帧。
-- 加载完成前显示静态首帧或简洁加载层，不显示多个叠加帧。
-- 资源失败时解除页面锁定并回退静态降级图（chroma 为静态 Alpha 图，baked 为
-  `poster.png`），不能露出绿幕或半成品画面。
-- 不让次要动画阻塞整个页面。
+- `pointermove`、`scroll` 和触摸事件只记录输入，不在事件回调中反复写 DOM。
+- 布局变化后重新读取主体位置；不要永久缓存 `getBoundingClientRect()`。
+- 使用 `IntersectionObserver` 暂停离屏计算，使用 `ResizeObserver` 更新布局。
+- 手机方向权限必须由用户手势请求；拒绝或不可用时回退触摸或静态状态。
+- 页面切后台时暂停；恢复后以最新目标和当前媒体时间继续。
 
-## 性能
+## 预加载与降级
 
-- 事件监听器使用 `passive: true`，只更新内存中的目标。
-- 每个 `requestAnimationFrame` 最多写一次 DOM，整数帧未改变时不更新样式。
-- 元素离屏且参数稳定时停止 `requestAnimationFrame`。
-- 避免为“流畅”同时渲染两张大透明图。
-- 测试冷缓存、弱网、低端手机、页面滚动和快速反向输入。
+- 图集预加载清单、静态帧和图集，并等待 `Image.decode()`。
+- 视频预加载静态降级、元数据和首个需要的媒体；`loadedmetadata` 前不得 seek 或播放。
+- 加载完成前只显示一张静态降级图或简洁加载层。
+- 资源失败时解除页面锁定并回退静态画面，不让次要动画阻塞页面。
+- `prefers-reduced-motion` 使用合同指定的静态状态，不自动播放或连续 scrub。
+
+## 性能验收
+
+- 每个动画帧最多一次 DOM 写入；目标未变化时不重复渲染。
+- 离屏或状态稳定时停止 `requestAnimationFrame`。
+- 不同时渲染两张大图做“平滑”。
+- 在冷缓存、弱网、低端移动设备、快速反向和连续输入下检查。

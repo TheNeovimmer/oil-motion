@@ -5,176 +5,146 @@ description: "Design, implement, optimize, and explain interactive web animation
 
 # Oil Motion
 
-从目标出发构思交互动画，先生图锁定首尾状态，再用 AI 视频补全连续动作，最后编译成由连续参数控制的网页动画。生成模型负责主要画面和动作，程序只负责可重复、可测量的媒体处理与运行时控制。
+把用户的交互意图转换为可验收的动画素材、时间轴清单和网页运行时。AI 生成负责肢体、结构、材质、遮挡等语义变化；程序负责输入映射、播放控制、媒体处理和性能。
 
-确定性媒体流水线需要 Python 3、Pillow、ffmpeg 和 ffprobe（用
-`python3 -m pip install -r "$OIL_MOTION/scripts/requirements.txt"` 安装）；所有命令
-使用 Skill 自身绝对路径（`OIL_MOTION="$HOME/.codex/skills/oil-motion"`）。默认视频
-模型固定为 ZenMux 的 `minimax/minimax-h3`；只有用户明确要求更换，或 MiniMax 无法
-完成目标时才讨论其他模型，不要让用户在没有必要时承担模型选择。
-
-## 首次配置 API Key
-
-生成视频前先检查一次；已经配置时直接继续，不要再次询问：
+确定性流水线需要 Python 3、Pillow、ffmpeg 和 ffprobe：
 
 ```bash
-python3 "$OIL_MOTION/scripts/oil_motion_config.py" status   # 已配置则继续
-python3 "$OIL_MOTION/scripts/oil_motion_config.py" set      # 未配置时引导用户运行一次
+OIL_MOTION="$HOME/.codex/skills/oil-motion"
+python3 -m pip install -r "$OIL_MOTION/scripts/requirements.txt"
 ```
 
-脚本会隐藏输入内容，并把密钥保存在本机的
-`~/.config/oil-motion/config.json`（不在项目目录内，限当前用户读写）。不要让用户把
-密钥写进项目、提示词、命令参数、日志或任务元数据；`ZENMUX_API_KEY` 环境变量仍然
-可用，并且优先于配置文件。
+默认视频模型为 ZenMux `minimax/minimax-h3`。只有模型无法完成目标或用户明确指定时才更换。
 
-## 职责边界
+## 首次配置
 
-- **语义运动**包含产品拆解、部件组装、壳体开启、材质变化、液体流动、肢体形变以及前后遮挡关系。用已验收的首尾关键帧锁定结果，再让 AI 视频生成中间连续变化；不要用整张图片的 CSS 变换冒充。
-- **几何运动**是整组素材的位移、缩放、旋转、裁切、时间映射、层级切换和惯性。这些变化由程序完成，因为它们需要精确响应交互参数。
-- 判断边界时先问：“如果只移动整张图片，关节、接触点和遮挡是否仍然自然？”如果答案是否定的，就必须生成完整动作，而不是继续增加程序补丁。
+生成视频前检查一次；已配置则直接继续：
+
+```bash
+python3 "$OIL_MOTION/scripts/oil_motion_config.py" status
+python3 "$OIL_MOTION/scripts/oil_motion_config.py" set
+```
+
+密钥保存在 `~/.config/oil-motion/config.json`。不得写入项目、提示词、命令参数、日志或任务元数据。
+
+## 四个唯一事实源
+
+每项信息只保存在一个位置，其他文件引用它，不复制：
+
+1. `source/concept-contract.yaml`：用户明确要求的对象、视觉、交互和连续性。
+2. `source/motion-brief.yaml`：由合同派生的关键帧、片段和生产计划。
+3. `build/timeline.json`：成片的实际帧率、段落边界、停帧和播放曲线。
+4. `build/motion-budget.json`：交付格式与运行时控制器的自动选择结果。
 
 ## 主流程
 
-### 0. 构思 Motion Concept（按需）
+### 1. 锁定用户意图
 
-用户只有目标、对象或模糊的“想做得更有趣”时，先阅读
-[references/concepts.md](references/concepts.md) 完成创意发散，给出最多三个真正不同
-的方向；用户已明确驱动方式、动作和视觉结果时直接锁定 Concept Contract。不要把某个
-项目的品牌、角色或布局偏好写成通用动画规则。
-
-### 1. 锁定 Concept Contract（执行前硬门）
-
-任何生成之前，先把用户需求逐项锁定为 Concept Contract。合同只保存用户意图，每一项
-都必须有来源：用户原话、参考图，或用户的明确确认。
+用户只有模糊目标时，先读 [references/concepts.md](references/concepts.md)，给出最多三个真正不同的方向；要求已经明确时直接写 Concept Contract。
 
 ```yaml
-subject_count: 1                # 画面中的主体数量，逐个数清
-subjects:                       # 每个主体的身份锚点
-  - name: 主角
-    identity: 面孔、发型、服装、标志性配饰
-style: 动漫                      # 用户指定的风格原词，不替换
-mood: 胜利的克制与张力            # 情绪与张力
-narrative: 单人胜利演武           # 叙事形式
-background_owner: video | page  # 背景与主体同视频烘焙，或页面独立拥有
-scene: 演武厅、环境光、地面接触    # 背景归属为 video 时的场景锚点
-driver: scroll | pointer | drag | touch | orientation | audio | data | state
-continuity:                     # 硬性连续性要求
-  - 每段同脸
-  - 首尾帧连续
-  - 背景连续
-clip_continuity: chain | independent  # 多段首尾接力，或合同明确的独立状态
-destination: 页面位置、显示尺寸和设备
+subject_count: <number>
+subjects:
+  - identity: <可验证的身份或外观锚点>
+style: <用户原词>
+motion_intent: <动作及视觉结果>
+background_owner: video | page
+scene: <背景属于视频时的场景、镜头和光线要求>
+driver: scroll | pointer | drag | touch | orientation | audio | data | state | time
+input_semantics: continuous | step | event
+time_control: scrub | segment-play | autonomous
+navigation: continuous | paged | none
+clip_continuity: chain | independent
+continuity: [<必须保持不变或连续的内容>]
+destination: <页面位置、最大显示尺寸和目标设备>
 ```
 
-规则：
+判断规则：
 
-1. 用户说“单人”就是一个主体，说“动漫”就保持动漫风格。**禁止擅自扩写或改向**：不得把“单人动漫格斗胜利演武”扩写成“双人写实拆招”，不得加人、换风格、换情绪、换叙事形式。任何扩写都属于变更需求，必须先向用户确认。
-2. 缺项且会改变生产路线时（主体数量、风格、背景归属、连续性要求），先问用户，不得自行假设。`clip_continuity` 没有默认值，必须显式锁定。
-3. 背景归属的默认判定：镜头运动、环境光、地面接触或阴影、景深、背景连续性中任意一项重要，或主体不需要脱离背景复用时，`background_owner: video`。只有主体必须以透明形式叠加到页面自有、可更换的背景上时，才用 `page`。
-4. 合同锁定后写入 `source/concept-contract.yaml`，之后的关键帧、提示词、母版验收和最终验收都逐项对照合同。发现产出偏离合同即返工，不得将错就错。
+- `scrub`：输入值与时间轴位置持续对应，输入停止时画面停在当前位置。
+- `segment-play`：输入选择下一状态，片段随后按时间播放；反向输入应从当前画面撤回，不得换源硬切。
+- `autonomous`：动画由时间推进，交互只负责开始、暂停或切换状态。
+- `navigation` 只描述页面如何移动，不决定视频如何播放；分页页面也可以使用连续时间轴。
+- 镜头、环境光、接触阴影、景深或背景连续性重要时使用 `background_owner: video`。只有主体必须透明复用在页面背景上时使用 `page`。
+- 用户已说清的内容直接记录，不改写、不扩写。缺项会改变可生成性、可验收结果或生产路线时，必须先补齐。
 
-### 2. 建立 Motion Brief（派生执行计划）
+### 2. 建立生产计划
 
-Motion Brief 只保存从合同、参考图和上下文中派生的执行计划。用户意图字段
-（`background_owner`、`clip_continuity`、`driver`、`destination` 等）以 Concept
-Contract 为唯一事实源，Brief 不再复制；执行时从合同读取。
+Motion Brief 只保存派生计划，不复制合同字段：
 
 ```yaml
-concept_contract: source/concept-contract.yaml  # 必须先锁定
-reference: 身份和风格基准图
-identity_bible: source/identity-bible.md        # 有角色时必填
+concept_contract: source/concept-contract.yaml
+identity_bible: source/identity-bible.md | null
 parameter_space: linear | circular | 2d | discrete
-motion: 参数变化时画面如何变化
-storyboard: 按顺序排列的视觉阶段
-keyframes: first | intermediate[] | last
-clip_chain: 每段视频使用哪两个相邻关键帧
-rest_state: 初始和失去输入时的状态
+media_access: sequential | random
+gesture_policy:
+  unit: continuous | one-gesture-one-step
+  inertia: coalesce | preserve
+  while_active: retarget | queue | ignore
+  boundary: clamp | loop
+  programmatic_navigation: ignore | observe
+storyboard: <有序视觉阶段>
+keyframes: <K0…Kn>
+clip_chain: <每段使用的相邻关键帧>
+rest_state: <初始及失去输入时的状态>
 loop: open | closed | none
-key_color: "#00FF00" | "#FF00FF"                # 仅 background_owner=page
-scene_continuity: 环境光、地面接触、背景连续性的锁定说明  # 仅 background_owner=video
-delivery: baked-video | alpha-atlas | chroma-video  # 由预算脚本填写，不询问用户
 anchor: fixed-body | center | bottom | free
-quality_target: 分辨率、参数采样密度、文件预算
-interpolation_fps: 48
-reduced_motion: 静态替代状态
+scene_continuity: <仅背景属于视频时填写>
+frame_policy: native | interpolate
+target_fps: <由源素材和运行时需求决定>
+quality_target: <分辨率、DPR 和文件预算>
+reduced_motion: <静态替代状态>
 ```
 
-参数模型：
+`parameter_space` 描述素材时间轴，不描述页面布局：`linear` 是有起止的时间轴，`circular` 是闭环，`2d` 是二维采样，`discrete` 是互不连续的状态。不要把二维或无序状态压成一条线性视频。
 
-| 模型 | 常见输入 | 素材结构 |
-|---|---|---|
-| linear | 滚动、拖拽、进度、音量 | 一条有起止点的时间轴 |
-| circular | 指针方向、旋钮、360° 展示 | 首尾连续的环形时间轴 |
-| 2d | 指针 X/Y、陀螺仪二维倾斜 | 二维采样网格或可组合的两条轴 |
-| discrete | hover、点击、成功、失败 | 多个独立片段和状态机 |
+整组位移、缩放、旋转、裁切和时间映射由程序完成；关节、结构、材质、接触和遮挡变化由生成模型完成。如果只移动整张图不能保持自然，就生成完整动作，不继续叠加 CSS 补丁。
 
-不要把二维或离散输入压成一条线性视频；二维采样、多条独立片段分别预算，细节见
-[references/delivery-selection.md](references/delivery-selection.md)。
+### 3. 制作关键帧
 
-### 3. 设计关键帧与 Identity Bible
+1. 有角色或需要身份一致时，先写 Identity Bible。
+2. 生成并验收 `K0…Kn`；每段只承担一个主要语义变化，片段 `i` 使用 `Ki → Ki+1`。
+3. 关键帧至少覆盖最大 CSS 尺寸乘目标 DPR，按最终裁切验收。
+4. `background_owner: page` 时，使用 `$imagegen` 直接生成真实 Alpha PNG；不得先生成色底再反向抠图。视频模型需要色键输入时，再由 `composite_alpha_keyframe.py` 从透明源合成副本。
+5. 提示词、首尾帧模式和提交方式见 [references/prompting.md](references/prompting.md)。已有视频或序列帧时跳过生成，保留原始素材并从分析开始。
 
-1. 先分别生成并验收首尾关键帧；多阶段叙事先生成完整关键帧组 `K0…Kn`，每张图只描述
-   一个清晰阶段，第 `i` 段视频固定使用 `Ki` 为首帧、`Ki+1` 为尾帧，每段只承担一个
-   主要语义变化。
-2. 每张关键帧在最终展示尺寸下验收构图、身份和细节，逐项对照 Concept Contract；
-   分辨率至少覆盖最终显示尺寸乘以目标 DPR；未通过不得提交视频。
-3. 有角色时，生成任何关键帧之前先写 `source/identity-bible.md` 锁定身份锚点；
-   验收标准见 [references/qa.md](references/qa.md)。
-4. 提示词写法、首尾帧模式与提交命令见
-   [references/prompting.md](references/prompting.md)。已有视频或序列帧作为输入时
-   跳过生成，直接从 `probe` / `analyze` 开始，保留原始素材。
+### 4. 先做 Pilot
 
-### 4. 首屏 Pilot 硬门（批量生成前强制）
+批量生成前，只完成第一组关键帧、第一段视频和真实页面挂载。按 [references/qa.md](references/qa.md) 通过 Pilot 硬门后才能量产；失败就修正上游，不在运行时掩盖。
 
-量产前按 [references/qa.md](references/qa.md) 的“Pilot 硬门”完成第一段真实页面验收；
-未通过就停在 Pilot 返工。批准命令和 production 阶段要求均以该文档为准。
+### 5. 自动选择交付与运行时
 
-### 5. 预算与路线选择（脚本执行）
+运行 `motion_budget.py --strict`，显式传入合同中的 `background_owner` 和 `time_control`，保存 `build/motion-budget.json`。脚本分别返回：
 
-正式生成前先运行 `motion_budget.py --strict`，显式传入合同锁定的
-`--background-owner`（滚动驱动同时传 `--scroll-pages`），保存 `--report`。
-`delivery.selected` 是唯一交付决策：Agent 直接执行，不向用户抛技术选项；`--strict`
-失败即停止，不要生成完整视频。决策顺序、阈值、超预算处理和全部命令示例见
-[references/delivery-selection.md](references/delivery-selection.md)。
+- `delivery.selected`：`baked-video | chroma-video | alpha-atlas`。
+- `runtime.controller`：`frame-scrub | segment-playback | autonomous-playback`。
 
-按选择结果路由到唯一对应流程，不要混用 chroma 与 baked 路线的命令：
+格式选择与播放方式是两件事，不得互相推断。命令和决策顺序见 [references/delivery-selection.md](references/delivery-selection.md)。按结果只读取一条媒体路线：
 
 - `alpha-atlas`：[references/minimax-spritesheet.md](references/minimax-spritesheet.md)
 - `chroma-video`：[references/chroma-video.md](references/chroma-video.md)
 - `baked-video`：[references/baked-video.md](references/baked-video.md)
 
-### 6. 生成动作母版
+### 6. 生成并逐段验收
 
-按 [references/prompting.md](references/prompting.md) 提交视频任务；母版验收与多段
-连续性按 [references/qa.md](references/qa.md) 执行。任一硬门失败即停止。
+按 [references/prompting.md](references/prompting.md) 生成母版，按 [references/qa.md](references/qa.md) 验收内容与连续帧链。`chain` 模式必须同时验证生成输入接力和相邻成片解码后的输出接缝；任一失败都停止后续生产。
 
-### 7. 插帧、清理与编译
+### 7. 清理、编译并生成时间轴
 
-1. 母版通过内容验收后按 [references/optimization.md](references/optimization.md)
-   插帧并检查接触表，失败即停止。
-2. 按 `delivery.selected` 阅读对应路线参考，执行该路线的清理、稳定、检测、编译和
-   打包；路线参考中的任何检查失败都不得绕过。
+按 [references/optimization.md](references/optimization.md) 执行 `frame_policy`，再进入已选择的媒体路线。所有裁剪和拼接都要检查新产生的相邻帧；不得用一次远距离跳帧替代缓慢尾部变化。
 
-### 8. 实现交互控制
+编译后生成 `build/timeline.json`，字段语义只以 [references/runtime.md](references/runtime.md) 的时间轴规范为准。时间值必须由最终编译结果生成，不手工抄写。
 
-从 [assets/interactive-motion.ts](assets/interactive-motion.ts) 开始，按自动选中的路线
-参考接入对应渲染器；输入映射、阻尼、预加载、降级和移动端细节统一见
-[references/runtime.md](references/runtime.md)。
+### 8. 接入运行时
 
-### 9. 验收
+从 [assets/interactive-motion.ts](assets/interactive-motion.ts) 的对应控制器开始实现；分步手势使用 [assets/step-gesture.ts](assets/step-gesture.ts)。输入映射、分段播放、反向、取消、预加载和降级只以 [references/runtime.md](references/runtime.md) 为准。
 
-逐项对照 Concept Contract 与 Identity Bible，按路线完成各自验收，并在目标 CSS 尺寸、
-DPR、冷缓存、快速反向和移动端条件下复核；完整清单、硬门命令和故障定位见
-[references/qa.md](references/qa.md)。
+### 9. 最终验收
 
-### 10. 生成动画原理展示页（按需）
+按 [references/qa.md](references/qa.md) 在目标 CSS 尺寸、DPR、冷缓存、快速反向、移动端和资源失败条件下验收。页面导航、时间控制、媒体格式和连续性分别检查，不用一种检查代替另一种。
 
-需要向用户展示“母版视频 → 图集 → 输入映射 → 当前帧”时，阅读
-[references/explainer.md](references/explainer.md) 并运行 `create_explainer.py`
-生成独立 HTML；不要复制项目私有角色或文案冒充通用模板。
+需要动画原理展示页时，读 [references/explainer.md](references/explainer.md) 并使用 `create_explainer.py`。
 
 ## 交付
 
-保留 `source/` 母版、`pilot/` 批准证据、`qa/` 报告和 `final/` 成品。`final/` 只交付
-`delivery.selected` 对应的一种主资源及静态降级，不重复实现其他路线；同时说明合同、
-提示词、处理命令、自动选择依据、最终资产和运行时入口。
+保留 `source/`、`pilot/`、`build/`、`qa/` 和 `final/`。`final/` 只包含选中的主资源、静态降级和运行时入口；同时交付四个事实源及可复现的处理命令。

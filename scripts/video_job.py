@@ -22,6 +22,7 @@ import urllib.request
 from pathlib import Path
 from typing import Any
 
+from media_edges import extract_last_frame
 from production_gate import validate_pilot_approval, verify_frame_chain
 
 from PIL import Image
@@ -361,17 +362,31 @@ def generate(args: argparse.Namespace) -> int:
     download(video_url, output)
     print(f"视频：{output}", flush=True)
 
+    last_frame_output = (
+        Path(args.last_frame_output).expanduser().resolve()
+        if args.last_frame_output
+        else output.with_name(f"{output.stem}-last-frame.jpg")
+    )
     last_frame_url = walk_for_url(
         final_response, ("last_frame_url", "lastFrameUrl", "last_frame")
     )
     if last_frame_url:
-        last_frame_output = (
-            Path(args.last_frame_output).expanduser().resolve()
-            if args.last_frame_output
-            else output.with_name(f"{output.stem}-last-frame.jpg")
-        )
         download(last_frame_url, last_frame_output)
-        print(f"尾帧：{last_frame_output}", flush=True)
+        last_frame_source = "api"
+    else:
+        extract_last_frame(output, last_frame_output)
+        last_frame_source = "video-fallback"
+    print(f"尾帧：{last_frame_output}（来源：{last_frame_source}）", flush=True)
+
+    metadata_payload = json.loads(metadata.read_text(encoding="utf-8"))
+    metadata_payload["lastFrame"] = {
+        "path": str(last_frame_output),
+        "source": last_frame_source,
+    }
+    metadata.write_text(
+        json.dumps(metadata_payload, ensure_ascii=False, indent=2),
+        encoding="utf-8",
+    )
     print(f"元数据：{metadata}", flush=True)
     return 0
 
