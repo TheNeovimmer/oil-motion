@@ -1,53 +1,131 @@
-# AI 视频动作提示词
+# AI 视频动作提示词与任务提交
 
-## 固定工作流：先生图，再生视频
+本文档是提示词写法与 `video_job.py` 提交命令的唯一事实源。路线选择见
+[delivery-selection.md](delivery-selection.md)，Pilot 与帧链硬门命令见
+[qa.md](qa.md)。
 
-不要直接用一段文字生成完整动作。先完成：
+## 准备首尾帧
 
-1. 用原始参考图生成并验收起始关键帧。
-2. 用同一组参考图生成并验收结束关键帧。
-3. 复杂叙事先生成全部中间关键帧 `K1…Kn`。
-4. 每次把两张相邻关键帧作为首尾帧提交给 MiniMax。
-5. 验收每段视频后，再由程序切帧、拼接、压缩和映射交互。
+生产主流程（先生图、再生视频、逐段串联）见 SKILL.md 主流程；本节只覆盖提示词侧的
+首尾帧准备。视频提示词只描述两张已验收关键帧之间如何连续变化，不再承担终点设计；
+主体身份、产品结构、Logo、构图和风格必须先在关键帧图片中解决。
 
-视频提示词只描述两张已确定图片之间如何连续变化，不再承担终点设计。主体身份、产品结构、
-Logo、构图和风格必须先在关键帧图片中解决。
+`background_owner=page` 时，关键帧图片使用内置 `$imagegen` 直接生成真实透明背景 PNG，
+保留原始 Alpha；不要让生图模型生成绿色、品红、灰色、白色或棋盘格背景。提交视频前，
+再从透明源确定性合成视频模型需要的均匀色键副本：
+
+```bash
+python3 "$OIL_MOTION/scripts/composite_alpha_keyframe.py" \
+  source/K0-alpha.png source/K0-video.png \
+  --key-color '#00FF00'
+```
+
+透明源与视频输入副本必须分开保存。主体含大量绿色时，合成副本改用 `#FF00FF`。
+
+需要同一主体从轨道一端精确移动到另一端时，可以先准备透明主体层，用程序生成身份和尺寸
+完全一致的首尾帧，再交给视频模型补全中间形变：
+
+```bash
+python3 "$OIL_MOTION/scripts/compose_travel_frames.py" subject.png \
+  --first-output first-green.png \
+  --last-output last-green.png \
+  --size 864x1536 \
+  --subject-height 0.36 \
+  --subject-anchor-x 0.535
+```
+
+该工具只负责扁平轨道、缩放和精确位移。中间的结构形变、接触关系和前后遮挡仍由首尾帧
+约束下的视频模型完成。
 
 ## 写提示词前先决定
 
+提示词从 Concept Contract 和 Identity Bible 出发，不得加入用户未确认的主体、人数、
+风格、情绪或叙事形式；合同中的限制必须原样成为提示词约束。
+
 先写清楚：
 
-1. 哪个连续参数控制动画。
-2. 参数的起点、终点和方向。
-3. 主体哪些部分允许变化，哪些必须固定。
+1. `time_control` 是逐帧 scrub、分段播放还是自主播放。
+2. 时间轴或状态转场的起点、终点和方向。
+3. 主体哪些部分允许变化，哪些必须固定（角色照抄 Identity Bible 的身份锚点）。
 4. 是否闭环。
-5. 使用绿色还是洋红色键，以及如何保证四角与时间维度均匀。
-6. 抠色后如何以 Alpha 主体叠加到页面背景。
-7. 最终会按时间、角度、二维位置还是状态取帧。
+5. 背景归属：`background_owner=video` 时写明场景、环境光、地面接触和景深如何保持
+   连续；`background_owner=page` 时写明关键帧生图使用真实 Alpha、视频输入副本使用
+   绿色还是洋红色键，以及如何保证视频四角与时间维度均匀。
+6. 最终会按时间、角度、二维位置还是状态取帧。
 
-生成模型负责动作语义和画面连续性，不负责精确切帧、透明通道、帧编号、压缩或图集。
+图片模型负责关键帧并直接输出透明通道；视频模型负责动作语义和画面连续性，不负责精确
+切帧、Alpha 视频、帧编号、压缩或图集。不要让视频提示词承担透明通道或图集输出。
 
-## 正确选择首尾帧模式或参考图模式
+## 提交视频任务（video_job.py）
 
-MiniMax H3 的两种图片输入模式互斥，不能混用：
+`video_job.py` 用于提交、轮询和下载 ZenMux / MiniMax 原生视频任务，把重复的接口
+调用、图片编码、状态轮询和结果保存程序化。提交前按 SKILL.md 的“首次配置 API Key”
+检查一次即可；脚本优先读取 `ZENMUX_API_KEY`，没有环境变量时读取本地配置。
 
-- `first_frame` 决定起始构图、角色位置、比例、镜头和背景。
-- `last_frame` 决定动作最终必须到达的画面。
-- `reference_image` 只用于不传首尾帧的参考生成模式。
-- `seed` 用于重跑和局部修复时减少无关变化。
-- `return_last_frame` 用于自动比较首尾差异。
+模式与参数约束：
 
-精确交互动画默认使用首尾帧模式。需要锁定身份、面部、服装、产品细节或插画风格时，
-先在生图阶段生成并验收一致的关键帧，不能在视频请求中再附加 `reference_image`。
-混用会触发接口错误 `2013`。
+- `reference_image` 与 `first_frame` / `last_frame` / `loop_frame` 互斥。混用会触发
+  MiniMax 接口错误 `2013`，脚本会在联网前阻止提交。
+- 首尾帧转场需要锁定身份时，先把身份和风格生成进验收后的首尾关键帧，不能再附加
+  `reference_image`。
+- 闭环动作把同一张已验收构图同时传为首帧和尾帧（`--loop-frame`）。这能加强接缝
+  约束，但仍需检查首尾差异和运动方向。
+- 默认不传 `--model`（固定 `minimax/minimax-h3`）和 `--ratio`（按首帧推断画幅）。
+- 默认传 5 秒 `duration`。使用 `--frames` 时不传 `duration`，二者不能同时出现；
+  只有当前接口明确支持帧数控制时才使用 `--frames`。
+- 模型支持时用 `--seed` 复现，并保存任务元数据和尾帧；seed 不能替代参考图和首尾帧。
+- `generate_audio=false` 不能作为最终无音轨保证；网页编译阶段始终显式使用 `-an`。
+- 模型实际输出时长和帧数可能略高于请求，并可能在尾帧产生停顿。必须先 `probe`，
+  再按目标尾帧清理，不能假设请求值就是成片值。
+- 模型或接口拒绝参数时停止并报告具体响应；只有用户同意降级后，才能移除约束或更换
+  模型，不要静默删掉首尾帧。
+- 一条视频只承担一条连续时间轴或一个状态转场；单段动作默认 3–6 秒，长序列更容易漂移。
+- `--stage` 必填：第一段为 `pilot`，后续生产段为 `production` 并传
+  `--pilot-approval`；连续叙事的生产段同时传 `--continuity-mode chain`、
+  `--previous-tail` 和 `--frame-chain-manifest`。Pilot 批准与帧链校验的规则、
+  阻断条件和命令见 [qa.md](qa.md)。
 
-闭环动作优先把**同一张已验收构图**同时作为首帧和尾帧，再在提示词里描述完整一圈的方向、速度和遮挡变化。不同首尾帧适合单向转场，不适合要求无缝循环。
+第一段 Pilot（闭环）：
 
-首尾帧约束不是免检条件：模型仍可能中途折返、停顿、生成多余肢体，或在最后几帧硬贴回首帧。必须检查完整视频、接触表、重复帧分布和首尾差异。
+```bash
+python3 "$OIL_MOTION/scripts/video_job.py" \
+  --stage pilot \
+  --segment-index 1 \
+  --prompt-file source/prompt.txt \
+  --first-frame source/first-frame.png \
+  --loop-frame \
+  --resolution 768p \
+  --ratio 1:1 \
+  --duration 5 \
+  --seed 42 \
+  --output source/master.mp4 \
+  --metadata source/master.job.json
+```
+
+单向转场把 `--loop-frame` 换成 `--last-frame source/last-frame.png`。
+
+第 2 段及之后的连续生产：
+
+```bash
+python3 "$OIL_MOTION/scripts/video_job.py" \
+  --stage production \
+  --segment-index 2 \
+  --pilot-approval pilot/approval.json \
+  --continuity-mode chain \
+  --previous-tail source/segment-01-last-frame.jpg \
+  --frame-chain-manifest qa/frame-chain.json \
+  --prompt-file source/segment-02.txt \
+  --first-frame source/segment-02-first.jpg \
+  --last-frame source/K2.png \
+  --output source/segment-02.mp4
+```
+
+分辨率先用 `768p` 验证动作，最终清晰度不足再使用 `2K`。
 
 ## 通用身份锁定段
 
-将下面内容放在动作描述前，并替换尖括号：
+有角色时，先把 Identity Bible 的身份锚点（脸型五官、发型发色、服装配色、标志物、
+体型比例、风格线条）写进这段，再放在动作描述前，并替换尖括号：
 
 ```text
 Use the supplied first and last frames as the exact identity and design
@@ -76,9 +154,27 @@ The body and contact point remain fixed. Only <ALLOWED_PARTS> may move.
 
 只有镜头运动本身需要被滚动控制时才删除这段，并明确描述镜头轨迹。
 
-## 绿幕段
+## 场景背景段（baked 路线）
 
-默认使用 `#00FF00`。主体含绿色时改用 `#FF00FF`。
+仅当 Concept Contract 锁定 `background_owner: video` 时使用。场景、环境光、地面
+接触和景深就是要烧进视频的内容，必须明确锁定，保证多段之间连续：
+
+```text
+The scene is <SCENE_ANCHOR> with <LIGHTING> and <GROUND_CONTACT>. Keep the
+environment, light direction, color temperature, ground contact, shadows, and
+depth of field identical and continuous across the entire shot. The background
+is part of the final picture: no chroma key, no flat color backdrop, no
+background replacement, and no transparency.
+```
+
+多段叙事时，这一段在每条提示词中原样复用，并把上一段验收后的实际尾帧作为下一段
+首帧输入。
+
+## 视频色键段（仅 chroma 路线）
+
+仅当 Concept Contract 锁定 `background_owner: page` 时追加到视频提示词。首尾关键帧
+先由 `$imagegen` 直接生成透明 PNG，再由 `composite_alpha_keyframe.py` 合成为下方视频
+输入；不要把这段用于图片生图提示词。默认 `#00FF00`，主体含绿色时改用 `#FF00FF`。
 
 ```text
 The entire background is one perfectly uniform flat chroma-key <KEY_COLOR>
@@ -156,11 +252,11 @@ reverse frame order must also form a natural backward move.
 先建立 `K0 → K1 → K2…Kn`：
 
 - `Ki` 和 `Ki+1` 是第 `i` 段视频的精确首尾帧。
-- 所有关键帧复用同一组参考图、画幅、风格约束和主体比例。
+- 所有关键帧复用同一组参考图、画幅、风格约束、主体比例和场景设定。
 - 每段只写一个主要变化，时长通常为 3–6 秒。
-- 模型返回的尾帧只有与已验收的 `Ki+1` 一致时才能继续作为下一段输入；否则仍使用原始
-  `Ki+1`，不要让误差逐段累积。
 - 拼接后逐帧检查接缝；若接缝不稳，重做对应短片，不重做整条时间轴。
+
+实际尾帧接力、SHA-256 校验和误差累积处理按 [qa.md](qa.md) 的“连续帧链”执行。
 
 ## 指针二维动画
 
@@ -183,7 +279,7 @@ that target and settle naturally. No entrance or exit motion.
 
 二维网格至少覆盖左上、上、右上、左、中、右、左下、下、右下。用程序统一锚点和尺寸，再做双线性邻域选择或插值。不要要求模型在一条视频中遍历网格后直接随机访问。
 
-## 滚动时间轴动画
+## 逐帧 scrub 时间轴
 
 适合产品拆解、页面叙事、图表展开和场景变换：
 
@@ -201,7 +297,22 @@ the composition readable when playback is stopped on any frame.
 动作、后段只保留近重复帧。百分比用于约束节奏，不要求模型输出精确帧编号；实际节奏
 仍需通过接触表检查，必要时裁剪或重定时。
 
-滚动序列不一定需要 24–60 FPS。优先生成清晰的语义关键阶段，再由程序决定抽帧密度。
+scrub 序列的目标帧率由帧密度和画质验收决定。优先生成清晰的语义关键阶段，再按
+[optimization.md](optimization.md) 选择保留原帧或插帧。
+
+## 分段播放转场
+
+适合输入触发后按时间完成、并在状态锚点停住的片段：
+
+```text
+Create one uninterrupted transition from the exact provided first frame to the
+exact provided last frame. Begin the intended motion immediately, preserve all
+identity, structure, framing, background, and lighting constraints throughout,
+and reach the final state only at the end. No cut, dissolve, unrelated idle
+motion, early completion, long final hold, or return motion.
+```
+
+每段只描述一个方向的主要变化。运行时反向通常复用同一段；只有倒放违反物理或叙事规律时，才另外生成反向片段。
 
 ## 离散状态动画
 
@@ -260,4 +371,5 @@ text, watermark, border, or style change.
 
 - 先生成 3–6 秒的单变量动作，长序列更容易漂移。
 - 以最终显示尺寸的 2 倍为最低母版分辨率。
-- 生成模型只负责连续动作母版；母版通过内容验收后统一程序插帧，默认目标为 48 FPS。提示词不要要求模型自行提高帧率。
+- 生成模型只负责连续动作母版；是否插帧由 Motion Brief 的 `frame_policy` 决定。
+  提示词不要要求模型自行提高帧率。

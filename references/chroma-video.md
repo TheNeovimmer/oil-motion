@@ -1,48 +1,69 @@
-# 绿幕视频交互路线
+# 色键视频路线
 
-仅当 `motion_budget.py` 返回 `delivery.selected=chroma-video` 时读取本流程。它主要适合一维顺序访问、长时间轴或大尺寸交互，也可作为一维随机访问资源超出图集预算时的降级主方案。
+仅当 `background_owner: page` 且预算返回 `delivery.selected=chroma-video` 时读取。主体通过 WebGL 实时生成 Alpha，页面拥有最终背景。
 
-视频仍然是绿幕素材。页面通过 WebGL 实时生成 Alpha，最终背景属于页面，换背景不需要重新生成主体。
+如果镜头、环境光、接触阴影、景深或背景连续性属于画面主体的一部分，停止本路线并回到合同改用 [baked-video.md](baked-video.md)。
 
 ## 编译
 
-先保存自动选择报告，再编译已通过内容验收的均匀绿幕母版：
+输入必须是从已验收透明关键帧确定性合成、并由视频模型保持均匀的色键母版：
 
 ```bash
-python3 scripts/motion_budget.py \
-  --frames 551 --display 1536x864 --dpr 1 \
-  --driver scroll --parameter-space linear \
-  --report build/motion-budget.json --strict
-
-python3 scripts/compile_scroll_video.py \
-  source/master.mp4 build/chroma-video \
+python3 "$OIL_MOTION/scripts/compile_scroll_video.py" \
+  "$SOURCE_VIDEO" "$OUTPUT_DIRECTORY" \
+  --background-owner page \
   --budget-report build/motion-budget.json \
-  --fps 48 \
-  --desktop-width 1920 \
-  --mobile-width 1280
+  --frame-policy "$FRAME_POLICY" \
+  --fps "$TARGET_FPS" \
+  --timeline-output build/timeline.json \
+  --desktop-width "$DESKTOP_WIDTH" \
+  --mobile-width "$MOBILE_WIDTH"
 ```
 
-脚本会：
+需要记录语义锚点时追加 `--anchor NAME=SOURCE_FRAME`；静态降级状态使用 `--poster-source-frame`。索引都基于帧准备后的序列，编译器会在清理后重新映射。
 
-1. 强制插帧到 48 FPS，保留绿幕，不在媒体中写入页面背景。
-2. 输出原始与插帧接触表和插帧报告。
-3. 按需清理闭环接缝或尾部停顿。
-4. 均匀抽取最多 48 帧做 Alpha 边缘分析，并从整段代表帧检查实际色键颜色与均匀度。
-5. 编码桌面端和移动端全关键帧 MP4，移除音轨。
-6. 生成静态 Alpha 降级图和 `compile.json`，记录帧数、色键、自动选择依据、尺寸、全关键帧检查和输出路径。
+编译器会：
 
-成功后默认删除可重新生成的中间 PNG，保留绿幕母版、接触表、分析报告、静态 Alpha 图和最终视频。只有定位插帧或编码问题时才传 `--keep-frames`。
+1. 按 `frame_policy` 保留原始帧或插帧，并输出接触表与报告。
+2. 按需清理接缝或重复尾帧。
+3. 检查整段代表帧的色键颜色与边缘均匀度。
+4. 编码桌面与移动全关键帧 MP4。
+5. 逐帧模拟运行时抠色，使用与 WebGL 相同的 `dominance-v2` 参数检查残留、误删和溢色。
+6. 生成编码后 Alpha 接触表、`background-matrix`、静态 Alpha 降级图和 `compile.json`。
 
-全关键帧会增加文件体积，但让 `currentTime` 的正向、反向和跳转延迟更稳定。不得改回自动播放或用连续播放速度模拟滚动。
+多段时间轴用 `--initial-state-id` 指定初始状态，并用重复的 `--segment DESTINATION_STATE_ID=START:HOLD:END_EXCLUSIVE` 传入后续状态与帧边界。编译器从最终保留帧生成状态映射与 `timeline.json`，页面不得手工换算秒数。
+
+默认删除可重新生成的中间 PNG；诊断帧准备、抠色或编码问题时才使用 `--keep-frames`。
+
+## 抠色硬门
+
+- 编译后的实际 MP4 解码帧仍有可见色键块、边缘溢色、主体内部误删或半透明脏边时，拒收母版。
+- 禁止靠扩大抠色阈值、腐蚀轮廓或模糊边缘掩盖素材缺陷。
+- 阈值只能复现已验收母版的已知色键，不能修复不均匀背景或错误主体颜色。
+- 半透明、发丝和大范围运动模糊属于高风险输入；无法稳定通过时重新生成，或重新评估背景归属。
+- 自动报告通过后仍要查看白、黑、高饱和色和真实页面背景上的合成结果。
 
 ## 网页接入
 
-组合两个共享运行时：
+使用两个共享实现：
 
-- `assets/interactive-motion.ts`：把滚动、拖拽等输入映射为整数目标帧，并处理阻尼与限速。
-- `assets/chroma-video-renderer.ts`：把整数帧换算成 `video.currentTime`，等待 seek 完成后由 WebGL 色键着色器绘制到透明 Canvas。
+- [assets/interactive-motion.ts](../assets/interactive-motion.ts)：按 `runtime.controller` 控制帧或视频时间。
+- [assets/chroma-video-renderer.ts](../assets/chroma-video-renderer.ts)：读取 `compile.json.runtime.keying` 并绘制透明 Canvas。
 
-页面结构保持简单：
+`frame-scrub` 调用 renderer 的 `render(frame)`。`segment-playback` 或 `autonomous-playback` 在视频按时间播放期间调用 `startLive()`，停止或销毁时调用 `stopLive()`。不要在页面复制 Shader 参数或另写抠色算法。
+
+```ts
+const runtime = manifest.runtime;
+const renderer = createChromaVideoRenderer({
+  video,
+  canvas,
+  frameCount: runtime.frameCount,
+  fps: runtime.fps,
+  keying: runtime.keying,
+});
+```
+
+页面不能直接显示色键视频：
 
 ```html
 <section class="motion-stage">
@@ -57,20 +78,17 @@ python3 scripts/compile_scroll_video.py \
 .motion-canvas { width: 100%; height: 100%; display: block; }
 ```
 
-不要给视频元素设置最终背景，也不要把绿幕视频直接显示给用户。
+## 加载与降级
 
-## 加载和降级
-
-- 预加载视频元数据、首段媒体和静态 Alpha 首帧。
-- `loadedmetadata` 后才能计算帧时长；每次只提交最新整数目标帧，丢弃过时 seek。
-- WebGL、视频解码或资源加载失败时显示静态 Alpha 首帧，页面不能露出绿幕。
-- `prefers-reduced-motion` 直接显示最能表达内容的静态 Alpha 状态。
-- 视频离屏时停止 seek 和绘制，重新进入视口后跳到最新目标帧。
+- 预加载静态 Alpha 状态、视频元数据和首个需要的媒体。
+- WebGL、视频解码或资源加载失败时显示静态 Alpha 图，不能露出色键母版。
+- `prefers-reduced-motion` 显示合同指定的静态 Alpha 状态。
 
 ## 验收
 
-- 在白、黑和高饱和背景上检查边缘，确认没有绿边、洋红边和主体内部误删。
-- 检查慢速滚动、快速滚动、连续反向、首帧、尾帧和跨章节跳转。
-- `compile.json` 中桌面与移动输出的 `allFramesAreKeyframes` 必须为 `true`。
-- 记录常规 seek 和快速反向 seek 延迟；若目标设备明显掉帧，先降低输出分辨率到实际 CSS 尺寸乘 DPR，不能降低语义帧密度来掩盖问题。
-- 页面换背景只改 CSS 后仍应正确显示；若必须重新生成主体，说明交付管线不合格。
+- `qa/post-encode-keying.json` 的桌面与移动结果均为 `passed: true`。
+- `compile.postEncodeKeyingPassed` 为 `true`，实际检查帧数与报告一致。
+- 查看 Alpha 接触表和 `background-matrix`；自动报告不能替代视觉检查。
+- `allFramesAreKeyframes` 为 `true`。
+- 按实际 `runtime.controller` 检查快速反向、停帧、连续播放或循环。
+- 页面更换背景只改变页面层，不重新生成主体。

@@ -1,53 +1,70 @@
-# 强制插帧与图集压缩
+# 帧策略与图集压缩
 
-AI 动作母版通过内容验收后，必须先插帧，再继续清理、稳定与打包。默认目标为 48 FPS。保留原始色键母版，所有输出写入新目录。
+本文件是 `frame_policy` 和图集清晰度预算的唯一事实源。先验收动作母版，再决定是否插帧；插帧不是默认正确答案。
 
-## 插帧门槛
+## 选择帧策略
+
+使用 `native`：
+
+- 源帧率已经满足最终正常播放；
+- 原始节奏、停顿或逐帧绘制感属于视觉设计；
+- 插帧会产生重影、双轮廓、线稿扭曲或结构错误。
+
+使用 `interpolate`：
+
+- scrub 的参数采样明显不足；
+- 目标播放速度下原始帧率可见跳步；
+- 插帧结果通过自动比较和人工接触表验收。
+
+把决定写入 Motion Brief：
+
+```yaml
+frame_policy: native | interpolate
+target_fps: <native 使用源帧率；interpolate 必须高于源帧率>
+```
+
+## 插帧流程
+
+只有 `frame_policy=interpolate` 时执行：
 
 ```bash
 python3 "$OIL_MOTION/scripts/optimize_motion.py" interpolate \
-  source/master.mp4 build/interpolated \
-  --fps 48 \
-  --key auto
+  "$SOURCE_VIDEO" "$OUTPUT_DIRECTORY" \
+  --fps "$TARGET_FPS" \
+  --key "$KEY_MODE"
 ```
 
-输出包含：
+同时检查原始与插帧接触表。新增重影、双轮廓、边缘撕裂、部件穿插、结构扭曲、亮度闪帧或中心突变时，插帧失败；改用合格的原始帧，或重新生成母版，不得把插帧伪影带入编译。
 
-- `frames/`：插帧并抠色后的 Alpha 帧。
-- `qa/contact-sheet-original.jpg`：原始帧接触表。
-- `qa/contact-sheet-interpolated.jpg`：插帧接触表。
-- `qa/analysis-interpolated.json`：插帧序列分析。
-- `interpolation-report.json`：插帧前后自动对比。
+`frame_policy=native` 仍需输出原始帧接触表和分析报告，只是不生成虚构中间帧。视频路线通过 `compile_scroll_video.py --frame-policy` 统一执行相应分支。
 
-必须同时人工检查两张接触表。出现重影、双轮廓、边缘撕裂、部件穿插、结构扭曲或新增闪帧时停止处理；不得跳过插帧直接交付原始帧。
+## 裁剪与拼接
+
+- 裁剪只删除确实无变化的重复区，不改变已验收动作的终点。
+- 每次裁剪或拼接后，重新检查所有新产生的相邻帧。
+- 不能删除一段缓慢变化，再把远处最终帧直接接回；需要保留到终点的连续采样。
+- 时间轴锚点和 `hold` 必须从最终保留帧重新生成。
 
 ## 图集压缩
 
-需要控制透明图集体积时继续使用 `scripts/optimize_motion.py`。保留插帧后的 Alpha 母版，压缩结果输出到新文件。
-
-## 图集目标体积
+只有预算选择 `alpha-atlas` 时执行：
 
 ```bash
-python3 "$OIL_MOTION/scripts/optimize_motion.py" atlas frames/final \
-  --output final/motion.webp \
-  --target-mb 2 \
-  --display 320x320 \
-  --dpr 2 \
-  --cell-width 768 \
-  --cell-height 768 \
-  --columns 16
+python3 "$OIL_MOTION/scripts/optimize_motion.py" atlas "$FINAL_FRAMES" \
+  --output "$OUTPUT_ATLAS" \
+  --target-mb "$TARGET_MIB" \
+  --display "$DISPLAY_SIZE" \
+  --dpr "$TARGET_DPR" \
+  --cell-width "$CELL_WIDTH" \
+  --cell-height "$CELL_HEIGHT" \
+  --columns "$COLUMNS"
 ```
 
-工具先用“最大 CSS 展示尺寸 × DPR”计算最低单帧像素，再保持单帧尺寸并搜索最高
-WebP 质量；无法达标时只能缩小到这个清晰度下限。输出同名 manifest 和
-`.optimize.json` 报告。`clarityMet` 必须为 `true`；若 `targetMet` 为 `false`，
-重新运行 `motion_budget.py`：一维序列可自动改用绿幕视频，二维或环形资源则降低参数采样密度或拆状态。不要继续缩小单帧。
+工具先按“最大 CSS 尺寸 × DPR”计算最低单帧像素，再在不低于该尺寸的前提下搜索压缩质量。`clarityMet` 必须为 `true`；`targetMet=false` 时回到 [delivery-selection.md](delivery-selection.md) 重新预算，不继续降低清晰度。
 
-## 选择原则
+## 验收
 
-- 插帧是生成动作母版后的强制步骤，默认目标为 48 FPS。
-- 自动对比通过后仍必须人工查看原始与插帧接触表。
-- 先满足参数采样密度，再讨论浏览器刷新率和阻尼。
-- 未确认最大实际 CSS 展示尺寸和目标 DPR 时，不执行最终压缩。
-- 先满足目标 DPR 下的单帧清晰度，再压质量；不得为了目标体积缩到清晰度下限以下。
-- 体积目标必须结合冷缓存、设备内存和纹理上限，不只看网络下载大小。
+- `native`：接触表、相邻帧分析和最终播放均通过。
+- `interpolate`：原始与插帧接触表均通过，且插帧没有新增结构或边缘缺陷。
+- 最大显示尺寸和目标 DPR 未确认前，不执行最终压缩。
+- 文件体积、解码内存和纹理尺寸同时满足目标设备预算。

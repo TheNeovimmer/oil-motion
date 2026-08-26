@@ -51,6 +51,8 @@ def check_size(size: tuple[int, int], required: tuple[int, int]) -> SizeCheck:
 def resolve_access(args: argparse.Namespace) -> str:
     if args.access != "auto":
         return args.access
+    if args.time_control in {"segment-play", "autonomous"}:
+        return "sequential"
     if args.parameter_space == "linear" and args.driver in {
         "scroll",
         "audio",
@@ -74,7 +76,18 @@ def select_delivery(
     )
     reason_codes: list[str] = []
 
-    if args.parameter_space == "2d":
+    if args.background_owner == "video":
+        selected = "baked-video"
+        reason_codes.append("background-baked-into-video")
+        if args.parameter_space in {"2d", "discrete"}:
+            reason_codes.append("baked-video-needs-independent-clips")
+        if (
+            access == "sequential"
+            and args.parameter_space == "linear"
+            and args.frames >= args.linear_video_min_frames
+        ):
+            reason_codes.append("long-linear-sequence")
+    elif args.parameter_space == "2d":
         selected = "alpha-atlas"
         reason_codes.append("two-dimensional-parameter-needs-discrete-frames")
         if not atlas_within_budget:
@@ -103,11 +116,6 @@ def select_delivery(
 
     return {
         "selected": selected,
-        "runtime": (
-            "css-alpha-atlas"
-            if selected == "alpha-atlas"
-            else "webgl-chroma-video"
-        ),
         "reasonCodes": reason_codes,
         "atlasWithinBudget": atlas_within_budget,
         "thresholds": {
@@ -134,6 +142,18 @@ def build_report(args: argparse.Namespace) -> dict[str, object]:
     )
     access = resolve_access(args)
     delivery = select_delivery(args, capacity, sheets, decoded_mib, access)
+    runtime = {
+        "renderer": {
+            "alpha-atlas": "css-alpha-atlas",
+            "chroma-video": "webgl-chroma-video",
+            "baked-video": "baked-video",
+        }[str(delivery["selected"])],
+        "controller": {
+            "scrub": "frame-scrub",
+            "segment-play": "segment-playback",
+            "autonomous": "autonomous-playback",
+        }[args.time_control],
+    }
 
     failures: list[str] = []
     source_check = check_size(args.source, required) if args.source else None
@@ -148,6 +168,13 @@ def build_report(args: argparse.Namespace) -> dict[str, object]:
         failures.append("图集单帧低于最终显示所需像素")
     if delivery["selected"] == "alpha-atlas" and capacity == 0:
         failures.append("单帧已超过纹理尺寸上限")
+    if (
+        delivery["selected"] == "baked-video"
+        and args.parameter_space in {"2d", "discrete"}
+    ):
+        failures.append(
+            "烘焙视频是一条线性时间轴，二维或离散参数必须拆成多条独立片段分别预算"
+        )
     if (
         delivery["selected"] == "alpha-atlas"
         and not delivery["atlasWithinBudget"]
@@ -197,8 +224,11 @@ def build_report(args: argparse.Namespace) -> dict[str, object]:
         "temporalCheck": temporal_check,
         "driver": args.driver,
         "parameterSpace": args.parameter_space,
+        "timeControl": args.time_control,
         "access": access,
+        "backgroundOwner": args.background_owner,
         "delivery": delivery,
+        "runtime": runtime,
         "failures": failures,
         "passes": not failures,
     }
@@ -219,8 +249,11 @@ def print_human(report: dict[str, object]) -> None:
     )
     print(f"全部帧解码内存理论值：{report['decodedFrameMemoryMiB']} MiB")
     delivery = report["delivery"]
+    runtime = report["runtime"]
     print(
-        f"自动选择：{delivery['selected']}（{delivery['runtime']}）"
+        f"背景归属：{report['backgroundOwner']}；"
+        f"媒体：{delivery['selected']}；"
+        f"控制器：{runtime['controller']}；渲染器：{runtime['renderer']}"
     )
     print("选择依据：" + "、".join(delivery["reasonCodes"]))
 
@@ -253,7 +286,10 @@ def print_human(report: dict[str, object]) -> None:
 
 def main() -> int:
     parser = argparse.ArgumentParser(
-        description="根据交互参数、CSS 尺寸、DPR、帧数和纹理预算自动选择 Alpha 图集或绿幕视频。"
+        description=(
+            "根据 Concept Contract 的背景归属、交互参数、CSS 尺寸、DPR、帧数和纹理预算"
+            "自动选择烘焙场景视频、Alpha 图集或绿幕视频。"
+        )
     )
     parser.add_argument("--frames", type=int, required=True, help="总帧数")
     parser.add_argument(
@@ -265,7 +301,17 @@ def main() -> int:
     )
     parser.add_argument(
         "--driver",
-        choices=("pointer", "scroll", "drag", "touch", "orientation", "audio", "data", "state"),
+        choices=(
+            "pointer",
+            "scroll",
+            "drag",
+            "touch",
+            "orientation",
+            "audio",
+            "data",
+            "state",
+            "time",
+        ),
         default="scroll",
         help="Motion Brief 中的交互驱动，默认 scroll",
     )
@@ -276,10 +322,27 @@ def main() -> int:
         help="Motion Brief 中的参数空间，默认 linear",
     )
     parser.add_argument(
+        "--time-control",
+        choices=("scrub", "segment-play", "autonomous"),
+        required=True,
+        help="Concept Contract 中的时间控制方式，必须显式传入",
+    )
+    parser.add_argument(
         "--access",
         choices=("auto", "random", "sequential"),
         default="auto",
         help="运行时主要访问方式；默认根据 driver 与 parameter-space 自动推断",
+    )
+    parser.add_argument(
+        "--background-owner",
+        choices=("page", "video"),
+        required=True,
+        help=(
+            "背景归属，来自 Concept Contract：video 表示背景与主体在同一视频中"
+            "烘焙生成（baked-video，默认场景路线）；page 表示主体需要透明复用，"
+            "由预算在 alpha-atlas 与 chroma-video 之间选择。必须显式传入，"
+            "禁止因遗漏参数而静默回退到绿幕路线"
+        ),
     )
     parser.add_argument(
         "--atlas-max-memory-mib",

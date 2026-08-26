@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import importlib.util
+import subprocess
 import sys
 import unittest
 from argparse import Namespace
@@ -22,8 +23,10 @@ def arguments(**overrides: object) -> Namespace:
         "dpr": 1.0,
         "max_texture": 4096,
         "driver": "pointer",
+        "time_control": "scrub",
         "parameter_space": "circular",
         "access": "auto",
+        "background_owner": "page",
         "atlas_max_memory_mib": 192.0,
         "linear_video_min_frames": 180,
         "source": None,
@@ -36,11 +39,30 @@ def arguments(**overrides: object) -> Namespace:
 
 
 class MotionBudgetSelectionTests(unittest.TestCase):
+    def test_cli_requires_explicit_background_owner(self) -> None:
+        completed = subprocess.run(
+            [
+                sys.executable,
+                str(MODULE_PATH),
+                "--frames",
+                "240",
+                "--display",
+                "1280x720",
+                "--strict",
+            ],
+            capture_output=True,
+            text=True,
+        )
+
+        self.assertNotEqual(completed.returncode, 0)
+        self.assertIn("--background-owner", completed.stderr)
+
     def test_small_random_sequence_selects_alpha_atlas(self) -> None:
         report = MOTION_BUDGET.build_report(arguments())
 
         self.assertEqual(report["delivery"]["selected"], "alpha-atlas")
-        self.assertEqual(report["delivery"]["runtime"], "css-alpha-atlas")
+        self.assertEqual(report["runtime"]["renderer"], "css-alpha-atlas")
+        self.assertEqual(report["runtime"]["controller"], "frame-scrub")
         self.assertTrue(report["passes"])
 
     def test_large_linear_scroll_selects_chroma_video(self) -> None:
@@ -54,7 +76,8 @@ class MotionBudgetSelectionTests(unittest.TestCase):
         )
 
         self.assertEqual(report["delivery"]["selected"], "chroma-video")
-        self.assertEqual(report["delivery"]["runtime"], "webgl-chroma-video")
+        self.assertEqual(report["runtime"]["renderer"], "webgl-chroma-video")
+        self.assertEqual(report["runtime"]["controller"], "frame-scrub")
         self.assertIn("long-linear-sequence", report["delivery"]["reasonCodes"])
         self.assertTrue(report["passes"])
 
@@ -87,6 +110,93 @@ class MotionBudgetSelectionTests(unittest.TestCase):
         self.assertEqual(report["delivery"]["selected"], "alpha-atlas")
         self.assertIn(
             "discrete-states-need-independent-assets",
+            report["delivery"]["reasonCodes"],
+        )
+        self.assertFalse(report["passes"])
+
+    def test_baked_scene_video_when_background_belongs_to_video(self) -> None:
+        report = MOTION_BUDGET.build_report(
+            arguments(
+                frames=551,
+                display=(1536, 864),
+                driver="scroll",
+                parameter_space="linear",
+                background_owner="video",
+            )
+        )
+
+        self.assertEqual(report["delivery"]["selected"], "baked-video")
+        self.assertEqual(report["runtime"]["renderer"], "baked-video")
+        self.assertEqual(report["runtime"]["controller"], "frame-scrub")
+        self.assertIn(
+            "background-baked-into-video",
+            report["delivery"]["reasonCodes"],
+        )
+        self.assertIn("long-linear-sequence", report["delivery"]["reasonCodes"])
+        self.assertEqual(report["backgroundOwner"], "video")
+        self.assertTrue(report["passes"])
+
+    def test_scroll_segment_play_is_not_misclassified_as_scrub(self) -> None:
+        report = MOTION_BUDGET.build_report(
+            arguments(
+                frames=240,
+                display=(1280, 720),
+                driver="scroll",
+                time_control="segment-play",
+                parameter_space="linear",
+                background_owner="video",
+            )
+        )
+
+        self.assertEqual(report["delivery"]["selected"], "baked-video")
+        self.assertEqual(report["runtime"]["controller"], "segment-playback")
+        self.assertEqual(report["access"], "sequential")
+
+    def test_cli_requires_explicit_time_control(self) -> None:
+        completed = subprocess.run(
+            [
+                sys.executable,
+                str(MODULE_PATH),
+                "--frames",
+                "240",
+                "--display",
+                "1280x720",
+                "--background-owner",
+                "video",
+            ],
+            capture_output=True,
+            text=True,
+        )
+
+        self.assertNotEqual(completed.returncode, 0)
+        self.assertIn("--time-control", completed.stderr)
+
+    def test_baked_video_is_not_failed_by_atlas_budget(self) -> None:
+        report = MOTION_BUDGET.build_report(
+            arguments(
+                frames=900,
+                display=(900, 900),
+                parameter_space="circular",
+                background_owner="video",
+            )
+        )
+
+        self.assertEqual(report["delivery"]["selected"], "baked-video")
+        self.assertTrue(report["passes"])
+
+    def test_baked_video_rejects_flattened_two_dimensional_input(self) -> None:
+        report = MOTION_BUDGET.build_report(
+            arguments(
+                frames=400,
+                display=(900, 900),
+                parameter_space="2d",
+                background_owner="video",
+            )
+        )
+
+        self.assertEqual(report["delivery"]["selected"], "baked-video")
+        self.assertIn(
+            "baked-video-needs-independent-clips",
             report["delivery"]["reasonCodes"],
         )
         self.assertFalse(report["passes"])

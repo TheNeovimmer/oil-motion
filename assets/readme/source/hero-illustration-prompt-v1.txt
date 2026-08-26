@@ -10,6 +10,6 @@ Style: professional oil-visual manga/comic ink illustration; clean confident bla
 
 Composition: wide horizontal 3:2 scene, readable silhouette, three visual regions from start keyframe to motion frames to end keyframe. Keep generous clear padding around the entire scene for compositing.
 
-Background: perfectly uniform flat #00FF00 chroma-key rectangle with no gradient, texture, noise, shadow, floor, horizon, reflection or lighting variation. Do not use #00FF00 in the subject.
+Background: genuine transparency with a preserved alpha channel. Every pixel outside the subject must be fully transparent. No green/magenta/grey/white backdrop, checkerboard, gradient, texture, noise, shadow, floor, horizon, reflection or lighting variation.
 
 No text, letters, numbers, logo, watermark, interface cards, dashboard, extra limbs, duplicated dog, missing pupils, motion blur, glossy rendering, photorealism or cast shadow. Keep every subject fully separated from all image borders.
