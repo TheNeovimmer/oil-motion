@@ -182,7 +182,10 @@ def build_report(args: argparse.Namespace) -> dict[str, object]:
         if args.parameter_space == "discrete":
             failures.append("离散状态合并后超预算，需要拆成独立状态或转场并分别预算")
         else:
-            failures.append("Alpha 图集超出单图集或内存预算，需要自动降低采样密度或显示尺寸")
+            failures.append(
+                "二维 Alpha 图集超出单图集或内存预算，需要降低参数采样密度、"
+                "拆分参数轴，或在用户确认的显示范围内重新预算"
+            )
 
     temporal_check = None
     if args.scroll_pages is not None:

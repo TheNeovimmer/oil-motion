@@ -65,6 +65,26 @@ class MotionBudgetSelectionTests(unittest.TestCase):
         self.assertEqual(report["runtime"]["controller"], "frame-scrub")
         self.assertTrue(report["passes"])
 
+    def test_large_circular_sequence_falls_back_to_chroma_video(self) -> None:
+        report = MOTION_BUDGET.build_report(
+            arguments(
+                frames=48,
+                display=(640, 640),
+                parameter_space="circular",
+            )
+        )
+
+        self.assertEqual(report["texture"]["columnsPerSheet"], 6)
+        self.assertEqual(report["texture"]["rowsPerSheet"], 6)
+        self.assertEqual(report["texture"]["framesPerSheet"], 36)
+        self.assertEqual(report["texture"]["sheetCount"], 2)
+        self.assertEqual(report["delivery"]["selected"], "chroma-video")
+        self.assertIn(
+            "atlas-budget-exceeded",
+            report["delivery"]["reasonCodes"],
+        )
+        self.assertTrue(report["passes"])
+
     def test_large_linear_scroll_selects_chroma_video(self) -> None:
         report = MOTION_BUDGET.build_report(
             arguments(
@@ -94,6 +114,12 @@ class MotionBudgetSelectionTests(unittest.TestCase):
         self.assertIn(
             "two-dimensional-parameter-needs-discrete-frames",
             report["delivery"]["reasonCodes"],
+        )
+        self.assertTrue(
+            any(
+                "拆分参数轴" in failure and "用户确认" in failure
+                for failure in report["failures"]
+            )
         )
         self.assertFalse(report["passes"])
 
