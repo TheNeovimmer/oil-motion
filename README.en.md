@@ -16,12 +16,13 @@ Tell your agent: install the oil-motion Skill from "https://github.com/oil-oil/o
 
 ## Animations it fits
 
-- A product gradually unfolds, breaks apart, or switches states as the page scrolls down.
-- A character, pet, or product naturally turns toward the cursor as the mouse moves.
-- Animation follows a drag gesture — forward, backward, or holding at a position.
-- Touch or device orientation controls the scene on mobile.
-- Clicks, hovers, or component state changes trigger the corresponding motion.
-- Plays naturally when idle, then switches to follow mode once the user interacts.
+- **Continuous One-Shot transitions via scrolling**: Infinite scale zoom-throughs (macro universe to microchip), foreground object wipe passes, temporal weathering, and gravitational spatial folds.
+- **As the page scrolls down**: Products assemble, disassemble into exploded views, enter chip silicon, or switch states.
+- **As the mouse moves**: Avatars and characters gaze around a clock-face circle (strictly camera-facing), or hardware products execute full 360° turntable showcase rotations.
+- **Animation follows gestures**: Forward, backward, or scrub-holding at precise positions.
+- **Mobile interactive controls**: Touch drag and device gyroscope tilting with smooth damping.
+- **State changes**: Component events trigger state-driven semantic video transitions.
+- **Idle to interaction**: Plays ambient motion when idle, smoothly snapping to real-time input follow mode once user interacts.
 
 These animations fit product intros, character interactions, interaction demos, data changes, and chapter transitions. Oil Motion also handles motion continuity, frame clarity, loading size, and mobile performance.
 

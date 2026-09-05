@@ -88,6 +88,8 @@ def make_test_video(path: Path, frames: int = 24) -> None:
 def decode_rgb(path: Path) -> list[tuple[int, int, int]]:
     with Image.open(path) as opened:
         image = opened.convert("RGB")
+    if hasattr(image, "get_flattened_data"):
+        return list(image.get_flattened_data())
     return list(image.getdata())
 
 

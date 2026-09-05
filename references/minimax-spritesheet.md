@@ -41,8 +41,8 @@ motion-name/
 
 按 SKILL.md 主流程依次执行：预算（[delivery-selection.md](delivery-selection.md)）→
 关键帧与提示词（[prompting.md](prompting.md)）→ Pilot 硬门（[qa.md](qa.md)）→ 提交
-与母版验收（[prompting.md](prompting.md)、[qa.md](qa.md)）→ 帧准备
-（[optimization.md](optimization.md)，需要色键输入时在该阶段离线生成 Alpha 帧）。
+与母版验收（[prompting.md](prompting.md)、[qa.md](qa.md)）→ 帧准备与插帧评估
+（[optimization.md](optimization.md)，scrub 随动交互且需要平滑角度采样时执行插帧与质检；需要色键输入时在该阶段离线生成 Alpha 帧）。
 任一环节失败即停止，不要进入下面的打包步骤。
 
 ## 2. 闭环清理与可选稳定
