@@ -278,8 +278,10 @@ export function createChromaVideoRenderer(
     gl.uniform2f(uvOffsetLocation, (1 - scaleX) / 2, (1 - scaleY) / 2);
   };
 
+  let contextLost = false;
+
   const draw = () => {
-    if (destroyed || video.readyState < video.HAVE_CURRENT_DATA) return;
+    if (destroyed || contextLost || video.readyState < video.HAVE_CURRENT_DATA) return;
     resize();
     gl.clearColor(0, 0, 0, 0);
     gl.clear(gl.COLOR_BUFFER_BIT);
@@ -383,6 +385,19 @@ export function createChromaVideoRenderer(
     draw();
     flush();
   };
+  const handleVideoError = () => {
+    seeking = false;
+    pendingFrame = null;
+  };
+  const handleContextLost = (event: Event) => {
+    event.preventDefault();
+    contextLost = true;
+    cancelLiveFrame();
+  };
+  const handleContextRestored = () => {
+    contextLost = false;
+    draw();
+  };
   const resizeObserver = new ResizeObserver(() => draw());
   resizeObserver.observe(canvas);
   video.muted = true;
@@ -390,6 +405,9 @@ export function createChromaVideoRenderer(
   video.preload = "auto";
   video.addEventListener("loadeddata", handleLoaded);
   video.addEventListener("seeked", handleSeeked);
+  video.addEventListener("error", handleVideoError);
+  canvas.addEventListener("webglcontextlost", handleContextLost);
+  canvas.addEventListener("webglcontextrestored", handleContextRestored);
   if (video.readyState >= video.HAVE_CURRENT_DATA) handleLoaded();
 
   return {
@@ -414,6 +432,9 @@ export function createChromaVideoRenderer(
       resizeObserver.disconnect();
       video.removeEventListener("loadeddata", handleLoaded);
       video.removeEventListener("seeked", handleSeeked);
+      video.removeEventListener("error", handleVideoError);
+      canvas.removeEventListener("webglcontextlost", handleContextLost);
+      canvas.removeEventListener("webglcontextrestored", handleContextRestored);
       gl.deleteTexture(texture);
       gl.deleteBuffer(buffer);
       gl.deleteProgram(program);

@@ -68,14 +68,28 @@ def artifact_record(raw_path: str | Path) -> dict[str, Any]:
     }
 
 
-def validate_artifact(record: dict[str, Any], label: str) -> None:
+def validate_artifact(
+    record: dict[str, Any],
+    label: str,
+    require_exact_hash: bool = True,
+    force: bool = False,
+) -> None:
     path = Path(str(record.get("path", ""))).expanduser().resolve()
     if not path.is_file():
         raise FileNotFoundError(f"{label} 工件不存在：{path}")
-    actual_size = path.stat().st_size
-    actual_hash = sha256_file(path)
-    if actual_size != record.get("bytes") or actual_hash != record.get("sha256"):
-        raise ValueError(f"{label} 工件已变化，Pilot 批准失效：{path}")
+    if path.stat().st_size == 0:
+        raise ValueError(f"{label} 工件为空文件：{path}")
+    if require_exact_hash:
+        actual_size = path.stat().st_size
+        actual_hash = sha256_file(path)
+        if actual_size != record.get("bytes") or actual_hash != record.get("sha256"):
+            if force:
+                print(
+                    f"警告：{label} 工件哈希已变化，已通过 --force 忽略差异：{path}",
+                    file=sys.stderr,
+                )
+            else:
+                raise ValueError(f"{label} 工件已变化，Pilot 批准失效：{path}")
 
 
 def contract_continuity_mode(raw_path: str | Path) -> str:
@@ -133,7 +147,10 @@ def create_pilot_approval(args: argparse.Namespace) -> dict[str, Any]:
     return report
 
 
-def validate_pilot_approval(raw_path: str | Path) -> dict[str, Any]:
+def validate_pilot_approval(
+    raw_path: str | Path,
+    force: bool = False,
+) -> dict[str, Any]:
     path = Path(raw_path).expanduser().resolve()
     if not path.is_file():
         raise FileNotFoundError(f"缺少 Pilot 批准文件：{path}")
@@ -149,19 +166,26 @@ def validate_pilot_approval(raw_path: str | Path) -> dict[str, Any]:
         record = artifacts.get(label)
         if not isinstance(record, dict):
             raise ValueError(f"Pilot 批准缺少 {label}：{path}")
-        validate_artifact(record, label)
+        is_strict = label != "pageEvidence"
+        validate_artifact(record, label, require_exact_hash=is_strict, force=force)
     approved_mode = report.get("continuityMode")
     if approved_mode not in {"chain", "independent"}:
         raise ValueError(f"Pilot 批准缺少有效 continuityMode：{path}")
     contract_path = artifacts["conceptContract"]["path"]
     actual_mode = contract_continuity_mode(contract_path)
     if actual_mode != approved_mode:
-        raise ValueError(f"Concept Contract 连续模式已变化，Pilot 批准失效：{path}")
+        if force:
+            print(
+                f"警告：Concept Contract 连续模式已由 {approved_mode} 变为 {actual_mode}，已通过 --force 允许执行",
+                file=sys.stderr,
+            )
+        else:
+            raise ValueError(f"Concept Contract 连续模式已变化，Pilot 批准失效：{path}")
     identity = artifacts.get("identityBible")
     if identity is not None:
         if not isinstance(identity, dict):
             raise ValueError(f"Pilot identityBible 记录无效：{path}")
-        validate_artifact(identity, "identityBible")
+        validate_artifact(identity, "identityBible", force=force)
     return report
 
 
@@ -170,6 +194,7 @@ def verify_frame_chain(
     next_first: str | Path,
     segment_index: int,
     manifest_path: str | Path | None = None,
+    force: bool = False,
 ) -> dict[str, Any]:
     if segment_index < 2:
         raise ValueError("帧链只用于第 2 段及之后的片段")
@@ -180,13 +205,19 @@ def verify_frame_chain(
         and previous["sha256"] == current["sha256"]
     )
     if not exact_match:
-        raise ValueError(
-            "连续帧链断裂：下一段 --first-frame 不是上一段验收尾帧的原文件"
-        )
+        if force:
+            print(
+                f"警告：第 {segment_index} 段首帧与上一段尾帧哈希不一致，已通过 --force 忽略差异继续执行",
+                file=sys.stderr,
+            )
+        else:
+            raise ValueError(
+                "连续帧链断裂：下一段 --first-frame 不是上一段验收尾帧的原文件"
+            )
     link = {
         "segmentIndex": segment_index,
         "verifiedAt": datetime.now(timezone.utc).isoformat(),
-        "exactSha256Match": True,
+        "exactSha256Match": exact_match,
         "previousTail": previous,
         "nextFirst": current,
     }

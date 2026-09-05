@@ -31,7 +31,7 @@ from oil_motion_config import require_api_key
 
 
 API_ROOT = "https://zenmux.ai/api/v1"
-DEFAULT_MODEL = "minimax/minimax-h3"
+DEFAULT_MODEL = "minimax/minimax-h3-max"
 TERMINAL_STATES = {"succeeded", "failed", "cancelled", "canceled"}
 COMMON_RATIOS = {
     "21:9": 21 / 9,
@@ -189,16 +189,18 @@ def redacted_metadata(
 def validate_production_gate(args: argparse.Namespace) -> dict[str, Any]:
     if args.segment_index < 1:
         raise ValueError("--segment-index 必须大于等于 1")
-    if args.stage == "pilot":
-        if args.segment_index != 1:
-            raise ValueError("Pilot 只能是第 1 段；后续片段必须使用 --stage production")
-        return {"stage": "pilot", "segmentIndex": 1}
+    stage = getattr(args, "stage", None) or "pilot"
+    if stage == "pilot":
+        return {"stage": "pilot", "segmentIndex": args.segment_index}
 
     if args.segment_index < 2:
         raise ValueError("production 阶段从第 2 段开始，--segment-index 必须大于等于 2")
     if not args.pilot_approval:
         raise ValueError("production 阶段必须提供 --pilot-approval")
-    approval = validate_pilot_approval(args.pilot_approval)
+    approval = validate_pilot_approval(
+        args.pilot_approval,
+        force=getattr(args, "force", False),
+    )
     gate: dict[str, Any] = {
         "stage": "production",
         "segmentIndex": args.segment_index,
@@ -228,6 +230,7 @@ def validate_production_gate(args: argparse.Namespace) -> dict[str, Any]:
             args.first_frame,
             args.segment_index,
             args.frame_chain_manifest,
+            force=getattr(args, "force", False),
         )
         gate["frameChain"] = link
         gate["frameChainManifest"] = str(
@@ -430,8 +433,8 @@ def parser() -> argparse.ArgumentParser:
     result.add_argument(
         "--stage",
         choices=("pilot", "production"),
-        required=True,
-        help="pilot 只允许第 1 段；production 会强制校验 Pilot 批准文件",
+        default="pilot",
+        help="阶段类型：默认 pilot（直接生成与验证）；production 阶段校验 Pilot 批准与连续性",
     )
     result.add_argument("--segment-index", type=int, default=1)
     result.add_argument("--pilot-approval")

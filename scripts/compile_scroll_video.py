@@ -1065,11 +1065,9 @@ def compile_motion(args: argparse.Namespace) -> int:
         encoding="utf-8",
     )
     if not args.keep_frames:
-        for directory in (raw_frames, cleaned_frames):
+        for directory in (raw_frames, preparation, cleaned_frames, post_encode_frames):
             if directory.is_dir():
                 shutil.rmtree(directory)
-        if post_encode_frames.is_dir():
-            shutil.rmtree(post_encode_frames)
         frames_root = output / "frames"
         if frames_root.is_dir() and not any(frames_root.iterdir()):
             frames_root.rmdir()

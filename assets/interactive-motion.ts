@@ -117,6 +117,9 @@ export function createFrameAnimator(
 
     if (Math.abs(target - position) > 0.002 || Math.abs(velocity) > 0.002) {
       raf = requestAnimationFrame(loop);
+    } else if (circular) {
+      position = wrap(position, frameCount);
+      target = position;
     }
   };
 
@@ -463,6 +466,16 @@ export function createSegmentPlayer(
   if (video.readyState >= 1) seekInitialState();
   else video.addEventListener("loadedmetadata", seekInitialState, { once: true });
 
+  const handleVideoError = (event: Event) => {
+    if (destroyed) return;
+    cancelScheduled();
+    video.pause();
+    running = false;
+    lastTick = 0;
+    options.onError?.(video.error ?? event);
+  };
+  video.addEventListener("error", handleVideoError);
+
   return {
     goTo(state: number | string) {
       if (destroyed) return;
@@ -493,6 +506,7 @@ export function createSegmentPlayer(
       this.cancel();
       destroyed = true;
       video.removeEventListener("loadedmetadata", seekInitialState);
+      video.removeEventListener("error", handleVideoError);
     },
   };
 }

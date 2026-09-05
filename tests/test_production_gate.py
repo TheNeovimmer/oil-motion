@@ -88,8 +88,12 @@ class ProductionGateTests(unittest.TestCase):
             approval = self.approval(root)
 
             GATE.validate_pilot_approval(approval)
-            (root / "page.png").write_bytes(b"changed")
+            # Updating pageEvidence does not invalidate pilot approval as long as file exists
+            (root / "page.png").write_bytes(b"updated screenshot")
+            self.assertTrue(GATE.validate_pilot_approval(approval)["passed"])
 
+            # Changing core generation artifact invalidates pilot approval
+            (root / "first.png").write_bytes(b"changed")
             with self.assertRaisesRegex(ValueError, "批准失效"):
                 GATE.validate_pilot_approval(approval)
 

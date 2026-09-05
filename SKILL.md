@@ -14,7 +14,7 @@ OIL_MOTION="$HOME/.codex/skills/oil-motion"
 python3 -m pip install -r "$OIL_MOTION/scripts/requirements.txt"
 ```
 
-默认视频模型为 ZenMux `minimax/minimax-h3`。只有模型无法完成目标或用户明确指定时才更换。
+默认视频模型为 ZenMux `minimax/minimax-h3-max`。只有模型无法完成目标或用户明确指定时才更换。
 
 ## 首次配置
 
@@ -40,7 +40,7 @@ python3 "$OIL_MOTION/scripts/oil_motion_config.py" set
 
 ### 1. 锁定用户意图
 
-用户只有模糊目标时，先读 [references/concepts.md](references/concepts.md)，给出最多三个真正不同的方向；要求已经明确时直接写 Concept Contract。
+用户只有模糊目标时，先读 [references/concepts.md](references/concepts.md)，给出最多三个真正不同的方向（含旋转物理分型与一镜到底范式）；要求已经明确时直接写 Concept Contract。
 
 ```yaml
 subject_count: <number>
@@ -98,6 +98,8 @@ reduced_motion: <静态替代状态>
 
 `parameter_space` 描述素材时间轴，不描述页面布局：`linear` 是有起止的时间轴，`circular` 是闭环，`2d` 是二维采样，`discrete` 是互不连续的状态。不要把二维或无序状态压成一条线性视频。
 
+`frame_policy` 规则：`scrub`（随动定位）对采样密度敏感，若源帧率可见跳步应在 Brief 中规划 `interpolate` 插帧；原始帧率已足够或插帧易产生重影伪影时使用 `native`。
+
 整组位移、缩放、旋转、裁切和时间映射由程序完成；关节、结构、材质、接触和遮挡变化由生成模型完成。如果只移动整张图不能保持自然，就生成完整动作，不继续叠加 CSS 补丁。
 
 ### 3. 制作关键帧
@@ -106,7 +108,7 @@ reduced_motion: <静态替代状态>
 2. 生成并验收 `K0…Kn`；每段只承担一个主要语义变化，片段 `i` 使用 `Ki → Ki+1`。
 3. 关键帧至少覆盖最大 CSS 尺寸乘目标 DPR，按最终裁切验收。
 4. `background_owner: page` 时，使用 `$imagegen` 直接生成真实 Alpha PNG；不得先生成色底再反向抠图。视频模型需要色键输入时，再由 `composite_alpha_keyframe.py` 从透明源合成副本。
-5. 提示词、首尾帧模式和提交方式见 [references/prompting.md](references/prompting.md)。已有视频或序列帧时跳过生成，保留原始素材并从分析开始。
+5. 提示词、首尾帧模式和提交方式见 [references/prompting.md](references/prompting.md)（严格区分时钟注视与展台自转；一镜到底按范式提供锚点约束）。已有视频或序列帧时跳过生成，保留原始素材并从分析开始。
 
 ### 4. 先做 Pilot
 
@@ -129,15 +131,15 @@ reduced_motion: <静态替代状态>
 
 按 [references/prompting.md](references/prompting.md) 生成母版，按 [references/qa.md](references/qa.md) 验收内容与连续帧链。`chain` 模式必须同时验证生成输入接力和相邻成片解码后的输出接缝；任一失败都停止后续生产。
 
-### 7. 清理、编译并生成时间轴
+### 7. 评估帧策略（插帧/原始帧）、清理与编译时间轴
 
-按 [references/optimization.md](references/optimization.md) 执行 `frame_policy`，再进入已选择的媒体路线。所有裁剪和拼接都要检查新产生的相邻帧；不得用一次远距离跳帧替代缓慢尾部变化。
+按 [references/optimization.md](references/optimization.md) 执行 `frame_policy`（`interpolate` 必须检查重影与伪影，不合格退回 `native` 或重生成），再进入已选择的媒体路线。所有裁剪和拼接都要检查新产生的相邻帧；不得用一次远距离跳帧替代缓慢尾部变化。
 
 编译后生成 `build/timeline.json`，字段语义只以 [references/runtime.md](references/runtime.md) 的时间轴规范为准。时间值必须由最终编译结果生成，不手工抄写。
 
 ### 8. 接入运行时
 
-从 [assets/interactive-motion.ts](assets/interactive-motion.ts) 的对应控制器开始实现；分步手势使用 [assets/step-gesture.ts](assets/step-gesture.ts)。输入映射、分段播放、反向、取消、预加载和降级只以 [references/runtime.md](references/runtime.md) 为准。
+从 [assets/interactive-motion.ts](assets/interactive-motion.ts) 的对应控制器开始实现（`frame-scrub` 管理随动与最短环形距离，`segment-playback` 管理分段与反向）；分步手势使用 [assets/step-gesture.ts](assets/step-gesture.ts)。输入映射、分段播放、反向、取消、预加载和降级只以 [references/runtime.md](references/runtime.md) 为准。
 
 ### 9. 最终验收
 

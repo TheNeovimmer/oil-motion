@@ -70,7 +70,7 @@ python3 "$OIL_MOTION/scripts/compose_travel_frames.py" subject.png \
   `reference_image`。
 - 闭环动作把同一张已验收构图同时传为首帧和尾帧（`--loop-frame`）。这能加强接缝
   约束，但仍需检查首尾差异和运动方向。
-- 默认不传 `--model`（固定 `minimax/minimax-h3`）和 `--ratio`（按首帧推断画幅）。
+- 默认不传 `--model`（固定 `minimax/minimax-h3-max`）和 `--ratio`（按首帧推断画幅）。
 - 默认传 5 秒 `duration`。使用 `--frames` 时不传 `duration`，二者不能同时出现；
   只有当前接口明确支持帧数控制时才使用 `--frames`。
 - 模型支持时用 `--seed` 复现，并保存任务元数据和尾帧；seed 不能替代参考图和首尾帧。
@@ -187,27 +187,74 @@ the subject. No text, subtitle, watermark, border, or UI.
 
 模型未必严格生成指定色值，所以最重要的是四周和时间维度保持均匀。后续脚本会从边缘采样真实背景色。
 
-## 环形方向动画
+## 旋转、转头与视向提示词
 
-适合视线、转头、产品方向、旋钮和 360° 展示：
+必须在写提示词前对照 [concepts.md](concepts.md) 的旋转物理分类，禁止混淆“时钟圆周注视”与“展台全景自转”：
+
+### 1. 时钟圆周注视（官网头像/吉祥物 360° 鼠标跟随）
+
+主体面部始终朝向镜头，视线在圆锥范围内随屏幕正前方顺时针圆周移动，**绝不自转露出后脑勺**：
 
 ```text
-Create one continuous clockwise directional cycle. Start with <SUBJECT> looking
-oriented toward <START_DIRECTION>. An invisible target moves at a constant
-angular speed around the subject through a complete 360-degree circle, and
-<SUBJECT> follows it smoothly with <ALLOWED_PARTS>. Pass through every
-intermediate direction without pausing, snapping, reversing, returning to the
-front early, or holding any direction. End at the same pose and direction as
-the first frame so the cycle joins cleanly. Keep <FIXED_PARTS> completely still.
-Use natural anatomical deformation, but no secondary idle motion, blinking,
-breathing, tail movement, or unrelated action.
+Create one continuous clockwise head and gaze rotation cycle. The face and eyes
+of <SUBJECT> remain oriented toward the camera at all times; do not rotate around
+to show the back of the head. An invisible target moves smoothly clockwise in a
+circle on the front screen plane (12 o'clock looking up, 3 o'clock looking
+right, 6 o'clock looking down, 9 o'clock looking left, returning cleanly to 12
+o'clock). <SUBJECT> follows the target smoothly within a natural cone of vision,
+tilting and rolling its head without leaving the front-facing half-sphere. Pass
+through every intermediate angle at a constant rate without pausing or snapping.
+End exactly at the first frame pose for a seamless loop. Keep torso and position
+completely stationary. No blinking, idle sway, or deformation.
 ```
 
-若运行时不需要闭环，改为：
+### 2. 水平有限摆头（横向 Scrub 左右巡顾，不闭环）
 
 ```text
-Move once continuously from <START_DIRECTION> to <END_DIRECTION>. Do not return
-to the start and do not pause at intermediate directions.
+Move once continuously from looking left (-60 degrees) through center to
+looking right (+60 degrees). Do not loop, do not return to start, and do not
+pause at intermediate angles. Head turns only on the horizontal yaw axis; locked
+vertical pitch, locked camera, locked scale, locked center anchor.
+```
+
+### 3. 产品 360° 展台自转（电商硬件全景展示）
+
+见后文 [产品 360° 提示词](#产品-360-提示词)，主体绕中心 Y 轴自转并展示侧面与背面。
+
+## 影视级一镜到底连续镜头提示词
+
+根据 [concepts.md](concepts.md) 的一镜到底洞察库，单段视频只负责一级物理转场，以首尾关键帧约束镜头连续性：
+
+### 1. 无限尺度穿透（Powers of Ten Zoom-Through）
+
+```text
+Use the supplied first frame <MACRO_FRAME> and last frame <MICRO_FRAME> as exact
+composition anchors. The camera executes one uninterrupted, accelerating forward
+dolly move directly toward the center subject <TARGET>. As the camera flies
+forward, the environment expands outward past the frame edges, seamlessly
+magnifying scale by orders of magnitude without cuts, jump pans, or rotational
+drift. Smoothly pass through intermediate layers <INTERMEDIATE_ATMOSPHERE> and
+arrive precisely at the framing and alignment of the final micro frame.
+```
+
+### 2. 实体视线遮挡转场（Object Wipe / Pass-Through）
+
+```text
+Continuous uninterrupted tracking shot following <SUBJECT> through the scene. A
+massive foreground obstacle <PILLAR_OR_DOORFRAME> slides rapidly across the lens
+from left to right, completely occluding the frame until 100% of the screen is
+filled by solid foreground tone, reaching the exact framing of the final anchor
+frame. No camera jump, constant velocity, locked exposure.
+```
+
+### 3. 时光剥蚀流转（Timewarp / Weathering）
+
+```text
+Camera remains locked on the exact silhouette and perspective of <SUBJECT>. Time
+accelerates through a continuous weathering transformation from the approved
+first frame state <ERA_1> to the approved final frame state <ERA_2>. Materials
+evolve smoothly (corrosion, oxidation, patina, or digital rebuilding) while all
+structural anchors, camera distance, and perspective remain perfectly identical.
 ```
 
 ## 产品拆解与爆炸图
@@ -356,6 +403,18 @@ background, lighting, and correct motion unchanged. Fix only this issue:
 - `Continue through the angle without pausing or snapping.`
 - `Make the last frame match the first frame exactly for a seamless loop.`
 
+## 拒绝过度装饰与反 AI 杂质
+
+严禁落入常见的“AI 默认噪点”与“无脑科幻杂质”陷阱，无论用户指定何种风格，都必须剔除无意义的装饰性干扰：
+
+1. **拒绝无端科幻元素与虚假细节堆砌**：
+   - 严禁在用户未明确要求的题材中机械填入 `cyberpunk, neon glow, intricate circuitry, mechanical wires, hyperdetailed 8k, technical panels` 等套路词汇。
+   - 避免满画面的细碎发光线条，这会破坏主体轮廓与画面焦点，造成廉价塑料感与视觉疲劳。
+2. **拒绝表面噪点覆盖，保持视觉呼吸感**：
+   - 视觉冲击力来自镜头运镜、形态对比与干净利落的画幅反差，而不是堆砌表面碎线；细节只服务于核心叙事焦点，轮廓与非焦点区域严禁装饰性杂质。
+3. **负面约束补充**：
+   - 针对非科幻题材必须剔除：`no unnecessary sci-fi circuitry, no generic cyberpunk neon clutter, no plastic AI noise, no over-detailed artificial lines, no visual noise.`
+
 ## 负面约束
 
 按需要加入，不必机械复制全部：
@@ -364,7 +423,7 @@ background, lighting, and correct motion unchanged. Fix only this issue:
 No cuts, morphing, identity drift, scale breathing, position drift, duplicated
 limbs, missing limbs, extra objects, blinking, idle sway, motion blur, ghosting,
 frame blending, lighting flicker, shadows on the background, camera movement,
-text, watermark, border, or style change.
+text, watermark, border, style change, unnecessary sci-fi circuitry, or plastic AI clutter.
 ```
 
 ## 分辨率和时长
